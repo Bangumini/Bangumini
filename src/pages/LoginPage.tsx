@@ -16,17 +16,24 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
     setLoading(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+
+      // Step 1: Get auth URL
+      const { url, state } = await invoke<{ url: string; state: string }>("get_auth_url");
+
+      // Step 2: Open browser from JS
+      window.open(url, "_blank");
+
+      // Step 3: Wait for callback
       const result = await invoke<{
         success: boolean;
         error?: string;
         access_token?: string;
         refresh_token?: string;
         expires_at?: number;
-      }>("start_oauth");
+      }>("wait_oauth_callback", { expectedState: state });
 
       if (result.success && result.access_token) {
         setToken(result.access_token);
-        // Store refresh info for later use
         if (result.refresh_token) {
           localStorage.setItem("bangumi_refresh_token", result.refresh_token);
         }

@@ -54,26 +54,25 @@ async fn fetch_proxy(req: FetchRequest) -> Result<FetchResponse, String> {
     Ok(FetchResponse { status, body })
 }
 
+#[derive(serde::Serialize)]
+struct AuthUrlResult {
+    url: String,
+    state: String,
+}
+
 #[tauri::command]
-async fn start_oauth(app: tauri::AppHandle) -> Result<OAuthResult, String> {
+fn get_auth_url() -> AuthUrlResult {
     let state: String = format!("{:x}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-
     let auth_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&state={}",
-        BANGUMI_AUTH,
-        CLIENT_ID,
-        "http%3A%2F%2Flocalhost%3A19840%2Fcallback",
-        state,
+        BANGUMI_AUTH, CLIENT_ID, "http%3A%2F%2Flocalhost%3A19840%2Fcallback", state,
     );
+    AuthUrlResult { url: auth_url, state }
+}
 
-    // Open browser
-    // Open browser using system command (works in Tauri without shell plugin)
-    #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd").args(["/c", "start", &auth_url]).spawn().map_err(|e| e.to_string())?;
-    #[cfg(not(target_os = "windows"))]
-    open::that(&auth_url).map_err(|e| e.to_string())?;
-
+#[tauri::command]
+async fn wait_oauth_callback(expected_state: String) -> Result<OAuthResult, String> {
     // Start local HTTP server for callback
     let listener = TcpListener::bind("127.0.0.1:19840").await.map_err(|e| e.to_string())?;
 
@@ -114,7 +113,7 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<OAuthResult, String> {
 
     drop(listener);
 
-    if code.is_empty() || returned_state != state {
+    if code.is_empty() || returned_state != expected_state {
         return Ok(OAuthResult { success: false, error: Some(if code.is_empty() { "No auth code".into() } else { "State mismatch".into() }), access_token: None, refresh_token: None, expires_at: None });
     }
 
@@ -168,7 +167,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
-        .invoke_handler(tauri::generate_handler![fetch_proxy, start_oauth, get_shortcut, set_autostart])
+        .invoke_handler(tauri::generate_handler![fetch_proxy, get_auth_url, wait_oauth_callback, get_shortcut, set_autostart])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
             let window = app.get_webview_window("main").unwrap();
