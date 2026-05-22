@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getAllUserCollections, getCalendar, getUserCollections } from "@shared/api/client";
+import { getAllUserCollections, getCalendar, getEpisodes, getUserCollections } from "@shared/api/client";
 import { SubjectTypeLabel } from "@shared/api/types";
 import {
   sortCollections,
@@ -46,17 +46,76 @@ export default function CollectionsPage() {
 
   const rawCollections = collData?.data ?? [];
 
+  // Build airing subject set from calendar
+  const airingIds = useMemo(() => {
+    if (!calendar) return [];
+    const ids: number[] = [];
+    for (const day of calendar) {
+      for (const item of day.items) {
+        ids.push(item.id);
+      }
+    }
+    return ids;
+  }, [calendar]);
+
+  // Fetch episodes for airing items (only in watching mode)
+  const { data: episodeMap } = useQuery({
+    queryKey: ["episodes", airingIds.join(",")],
+    queryFn: async () => {
+      if (airingIds.length === 0) return new Map<number, number>();
+      const results = await Promise.allSettled(
+        airingIds.map((id) => getEpisodes(id).then((data) => ({ id, data }))),
+      );
+      const map = new Map<number, number>();
+      const todayStr = new Date().toISOString().slice(0, 10);
+      for (const r of results) {
+        if (r.status === "fulfilled") {
+          const { id, data } = r.value;
+          const mainEps = data.data.filter((ep) => ep.type === 0);
+          const airedCount = mainEps.filter((ep) => ep.airdate && ep.airdate <= todayStr).length;
+          map.set(id, airedCount);
+        }
+      }
+      return map;
+    },
+    enabled: isWatching && airingIds.length > 0,
+    staleTime: 1000 * 60 * 30,
+  });
+
+  const airedEpMap = episodeMap ?? new Map<number, number>();
+
+  // Build airingMap (subject_id → weekday)
+  const airingMap = useMemo(() => {
+    const map = new Map<number, number>();
+    if (calendar) {
+      for (const day of calendar) {
+        for (const item of day.items) {
+          map.set(item.id, day.weekday.id);
+        }
+      }
+    }
+    return map;
+  }, [calendar]);
+
   const sorted = useMemo(() => {
     if (isWatching && calendar) {
-      return sortCollections(rawCollections, calendar, today, new Map());
+      return sortCollections(rawCollections, calendar, today, airedEpMap);
     }
     return rawCollections;
-  }, [rawCollections, calendar, isWatching, today]);
+  }, [rawCollections, calendar, isWatching, today, airedEpMap]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / LIMIT));
+  const displayLabelMap = useMemo(() => {
+    const map = new Map<number, string | null>();
+    for (const item of sorted) {
+      map.set(item.subject_id, getDisplayLabel(item, airingMap, airedEpMap, today));
+    }
+    return map;
+  }, [sorted, airingMap, airedEpMap, today]);
+
   const displayLabelText = (item: (typeof sorted)[0]) => {
     if (!isWatching) return null;
-    return getDisplayLabel(item, new Map(), new Map(), today);
+    return displayLabelMap.get(item.subject_id) ?? null;
   };
 
   const filtered = searchText

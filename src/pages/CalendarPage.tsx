@@ -7,18 +7,20 @@ export default function CalendarPage() {
   const navigate = useNavigate();
   const today = getTodayBangumiWeekday();
 
-  const { data: calendar, isLoading } = useQuery({
+  const { data: calendar, isLoading, error } = useQuery({
     queryKey: ["calendar"],
     queryFn: getCalendar,
     staleTime: 1000 * 60 * 30,
   });
 
   if (isLoading) return <p className="p-4 text-gray-500 text-sm">加载中…</p>;
+  if (error) return <p className="p-4 text-red-400 text-sm">加载出错: {String(error)}</p>;
+  if (!calendar || calendar.length === 0) return <p className="p-4 text-gray-500 text-sm">暂无放送数据</p>;
 
   return (
     <div className="p-4">
       <div className="space-y-4">
-        {(calendar ?? []).map((day) => {
+        {calendar.map((day) => {
           const isToday = day.weekday.id === today;
           return (
             <div key={day.weekday.id}>
