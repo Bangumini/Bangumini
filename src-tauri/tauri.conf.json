@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nickolay/tauri-docs/refs/heads/v2/docs/.vitepress/theme/schemas/config.schema.json",
+  "productName": "Bangumini",
+  "version": "0.1.0",
+  "identifier": "com.bangumini.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Bangumini",
+        "width": 680,
+        "height": 560,
+        "center": true,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "global-shortcut": {
+      "shortcuts": []
+    },
+    "autostart": {
+      "enabled": false
+    }
+  }
+}
