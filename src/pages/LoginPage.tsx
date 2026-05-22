@@ -20,8 +20,9 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
       // Step 1: Get auth URL
       const { url, state } = await invoke<{ url: string; state: string }>("get_auth_url");
 
-      // Step 2: Open browser from JS
-      window.open(url, "_blank");
+      // Step 2: Open browser via Tauri opener plugin
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      await openUrl(url);
 
       // Step 3: Wait for callback
       const result = await invoke<{
