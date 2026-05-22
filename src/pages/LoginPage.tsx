@@ -17,14 +17,10 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
 
-      // Step 1: Get auth URL
-      const { url, state } = await invoke<{ url: string; state: string }>("get_auth_url");
+      // Step 1: Start OAuth (generates URL + opens browser via Rust)
+      const { state } = await invoke<{ state: string }>("start_oauth");
 
-      // Step 2: Open browser via Tauri opener plugin
-      const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl(url);
-
-      // Step 3: Wait for callback
+      // Step 2: Wait for callback
       const result = await invoke<{
         success: boolean;
         error?: string;

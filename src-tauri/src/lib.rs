@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 const CLIENT_ID: &str = "bgm61886a103fe0672c1";
 const CLIENT_SECRET: &str = "32468c5f6ba84e3528d11bd4905f1726";
@@ -56,25 +59,41 @@ async fn fetch_proxy(req: FetchRequest) -> Result<FetchResponse, String> {
 
 #[derive(serde::Serialize)]
 struct AuthUrlResult {
-    url: String,
     state: String,
 }
 
+struct OAuthState {
+    listener: Option<TcpListener>,
+}
+
 #[tauri::command]
-fn get_auth_url() -> AuthUrlResult {
+async fn start_oauth(app: tauri::AppHandle) -> Result<AuthUrlResult, String> {
     let state: String = format!("{:x}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+
+    // Start server FIRST to avoid race condition
+    let listener = TcpListener::bind("127.0.0.1:19840").await.map_err(|e| e.to_string())?;
+
+    // Store listener in app state
+    let oauth_state = app.state::<Arc<Mutex<OAuthState>>>();
+    oauth_state.lock().await.listener = Some(listener);
+
     let auth_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&state={}",
         BANGUMI_AUTH, CLIENT_ID, "http%3A%2F%2Flocalhost%3A19840%2Fcallback", state,
     );
-    AuthUrlResult { url: auth_url, state }
+
+    app.opener().open_url(&auth_url, None::<&str>).map_err(|e| e.to_string())?;
+
+    Ok(AuthUrlResult { state })
 }
 
 #[tauri::command]
-async fn wait_oauth_callback(expected_state: String) -> Result<OAuthResult, String> {
-    // Start local HTTP server for callback
-    let listener = TcpListener::bind("127.0.0.1:19840").await.map_err(|e| e.to_string())?;
+async fn wait_oauth_callback(app: tauri::AppHandle, expected_state: String) -> Result<OAuthResult, String> {
+    // Retrieve the listener from app state
+    let oauth_state = app.state::<Arc<Mutex<OAuthState>>>();
+    let listener = oauth_state.lock().await.listener.take()
+        .ok_or_else(|| "No OAuth session started".to_string())?;
 
     // Accept one connection with 120s timeout
     let (stream, _) = tokio::time::timeout(
@@ -168,9 +187,13 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
-        .invoke_handler(tauri::generate_handler![fetch_proxy, get_auth_url, wait_oauth_callback, get_shortcut, set_autostart])
+        .invoke_handler(tauri::generate_handler![fetch_proxy, start_oauth, wait_oauth_callback, get_shortcut, set_autostart])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+
+            // Initialize OAuth state
+            app.manage(Arc::new(Mutex::new(OAuthState { listener: None })));
+
             let window = app.get_webview_window("main").unwrap();
             let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyB);
             app.global_shortcut().on_shortcut(shortcut, move |_app, _s, _e| {
