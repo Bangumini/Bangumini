@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:* https://api.bgm.tv https://next.bgm.tv https://bgm.tv; img-src 'self' https: data: http://localhost:*; style-src 'self' 'unsafe-inline'"
     }
   },
   "plugins": {}

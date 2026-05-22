@@ -25,6 +25,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![get_shortcut, set_autostart])
         .setup(|app| {

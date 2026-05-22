@@ -37,7 +37,7 @@ export default function CollectionsPage() {
     staleTime: 60_000,
   });
 
-  const { data: calendar } = useQuery({
+  const { data: calendar, error: calError } = useQuery({
     queryKey: ["calendar"],
     queryFn: getCalendar,
     enabled: isWatching,
@@ -154,12 +154,20 @@ export default function CollectionsPage() {
         </select>
       </div>
 
-      {error && <p className="text-red-400 text-sm">加载出错: {String(error)}</p>}
+      {error && <p className="text-red-400 text-sm">收藏加载出错: {String(error)}</p>}
+      {calError && <p className="text-red-400 text-sm">日历加载出错: {String(calError)}</p>}
       {isLoading && <p className="text-gray-500 text-sm">加载中…</p>}
       {!uname && !isLoading && <p className="text-gray-500 text-sm">正在获取用户信息…</p>}
 
       <div className="text-xs text-gray-500 mb-2">
-        {searchText ? `搜索 · 共 ${filtered.length} 条` : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条`}
+        {searchText
+          ? `搜索 · 共 ${filtered.length} 条`
+          : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条`}
+        {isWatching && (
+          <span className="ml-2 text-gray-600">
+            (日历条目: {airingMap.size}, 剧集数据: {airedEpMap.size})
+          </span>
+        )}
       </div>
 
       <div className="space-y-1">
