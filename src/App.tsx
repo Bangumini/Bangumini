@@ -14,7 +14,7 @@ import SettingsPage from "./pages/SettingsPage";
 setTokenProvider(getAccessToken);
 
 export default function App() {
-  const { authLoading, authenticated, handleLogin } = useAuth({ autoLogin: true });
+  const { authLoading, authenticated, handleLogin } = useAuth();
 
   useEffect(() => {
     if (authenticated) {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { isLoggedIn } from "../api/oauth";
 
-export function useAuth({ autoLogin }: { autoLogin?: boolean } = {}) {
+export function useAuth() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
 
@@ -9,9 +9,6 @@ export function useAuth({ autoLogin }: { autoLogin?: boolean } = {}) {
     const ok = isLoggedIn();
     setAuthenticated(ok);
     setAuthLoading(false);
-    if (!ok && autoLogin) {
-      setAuthenticated(true); // Show login page instead of blocking
-    }
   }, []);
 
   function handleLogin() {
