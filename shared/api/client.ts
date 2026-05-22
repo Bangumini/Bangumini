@@ -14,6 +14,13 @@ const BASE_URL = "https://api.bgm.tv";
 
 let tokenProvider: (() => Promise<string>) | null = null;
 
+// Detect if running in Tauri and use appropriate fetch
+let fetchFn: typeof fetch = fetch;
+
+export function setFetchFunction(fn: typeof fetch) {
+  fetchFn = fn;
+}
+
 export function setTokenProvider(fn: () => Promise<string>) {
   tokenProvider = fn;
 }
@@ -35,7 +42,7 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Prom
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const res = await fetch(url, { ...init, signal: controller.signal });
+      const res = await fetchFn(url, { ...init, signal: controller.signal });
       clearTimeout(timeout);
       return res;
     } catch (e) {
