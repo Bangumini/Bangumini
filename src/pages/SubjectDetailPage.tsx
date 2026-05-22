@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useState, useRef } from "react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   getSubject,
@@ -17,9 +17,11 @@ import { getUsername } from "../api/oauth";
 export default function SubjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const subjectId = Number(id);
   const [targetEp, setTargetEp] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const initialEpStatus = useRef<number | null>(null);
 
   const { data: subject } = useQuery({
     queryKey: ["subject", subjectId],
@@ -47,7 +49,12 @@ export default function SubjectDetailPage() {
       try {
         const uname = getUsername();
         if (!uname) return null;
-        return await getUserCollection(uname, subjectId);
+        const result = await getUserCollection(uname, subjectId);
+        // Record initial ep_status on first load
+        if (initialEpStatus.current === null && result) {
+          initialEpStatus.current = result.ep_status;
+        }
+        return result;
       } catch {
         return null;
       }
@@ -96,10 +103,25 @@ export default function SubjectDetailPage() {
     staffMap.set(role, names);
   });
 
+  const handleBack = () => {
+    const state = location.state as { fromCollections?: boolean } | null;
+    const currentEpStatus = collection?.ep_status ?? 0;
+    const hasChanged = initialEpStatus.current !== null && initialEpStatus.current !== currentEpStatus;
+
+    if (state?.fromCollections && hasChanged) {
+      // Navigate back with state to trigger refresh
+      navigate("/collections", {
+        state: { fromSubject: true, subjectId }
+      });
+    } else {
+      navigate(-1);
+    }
+  };
+
   return (
     <div className="h-screen flex flex-col bg-[#1a1a2e] text-gray-200">
       <header className="flex items-center gap-2 px-4 py-2 border-b border-gray-800 shrink-0">
-        <button onClick={() => navigate(-1)} className="text-gray-400 hover:text-white text-sm">
+        <button onClick={handleBack} className="text-gray-400 hover:text-white text-sm">
           ← 返回
         </button>
         <span className="text-sm font-medium truncate">{subject?.name_cn || subject?.name || "条目详情"}</span>

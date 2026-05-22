@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getCalendar } from "@shared/api/client";
@@ -8,22 +8,53 @@ export default function CalendarPage() {
   const navigate = useNavigate();
   const today = getTodayBangumiWeekday();
   const [currentDay, setCurrentDay] = useState<number>(today);
+  const [focusedIndex, setFocusedIndex] = useState(0);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const { data: calendar, isLoading, error } = useQuery({
     queryKey: ["calendar"],
     queryFn: getCalendar,
-    staleTime: 1000 * 60 * 30,
+    staleTime: 1000 * 60 * 60 * 24, // 24 hours - daily update
   });
+
+  // Reset focus when day changes
+  useEffect(() => {
+    setFocusedIndex(0);
+    itemRefs.current = [];
+  }, [currentDay]);
+
+  // Scroll focused item into view
+  useEffect(() => {
+    const item = itemRefs.current[focusedIndex];
+    if (item) {
+      item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [focusedIndex]);
 
   // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      const dayData = dayMap.get(currentDay);
+      const itemCount = dayData?.items.length || 0;
+
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         setCurrentDay((d) => (d <= 1 ? 7 : d - 1));
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
         setCurrentDay((d) => (d >= 7 ? 1 : d + 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFocusedIndex((i) => Math.max(0, i - 1));
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFocusedIndex((i) => Math.min(itemCount - 1, i + 1));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const item = dayData?.items[focusedIndex];
+        if (item) {
+          navigate(`/subject/${item.id}`);
+        }
       } else if (e.key === "Home") {
         e.preventDefault();
         setCurrentDay(today);
@@ -31,7 +62,7 @@ export default function CalendarPage() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [today]);
+  }, [today, currentDay, focusedIndex, navigate]);
 
   if (isLoading) return <p className="p-4 text-gray-500 text-sm">加载中…</p>;
   if (error) return <p className="p-4 text-red-400 text-sm">加载出错: {String(error)}</p>;
@@ -101,11 +132,16 @@ export default function CalendarPage() {
           </p>
         ) : (
           <div className="space-y-2">
-            {currentDayData.items.map((s) => (
+            {currentDayData.items.map((s, index) => (
               <div
                 key={s.id}
+                ref={(el) => (itemRefs.current[index] = el)}
                 onClick={() => navigate(`/subject/${s.id}`)}
-                className="flex items-center gap-3 p-2 rounded hover:bg-gray-800/50 cursor-pointer transition-colors"
+                className={`flex items-center gap-3 p-2 rounded cursor-pointer transition-colors ${
+                  index === focusedIndex
+                    ? "bg-indigo-600/30 ring-2 ring-indigo-500"
+                    : "hover:bg-gray-800/50"
+                }`}
               >
                 {s.images?.small && (
                   <img
@@ -140,7 +176,7 @@ export default function CalendarPage() {
 
       {/* Keyboard hints */}
       <div className="px-4 py-2 border-t border-gray-700 text-xs text-gray-500">
-        提示: 使用 ← → 方向键切换日期，Home 键回到今天
+        提示: ← → 切换日期 | ↑ ↓ 选择条目 | Enter 查看详情 | Home 回到今天
       </div>
     </div>
   );
