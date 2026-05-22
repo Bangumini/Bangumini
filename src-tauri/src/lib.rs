@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tauri::Manager;
-use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -89,8 +89,9 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<AuthUrlResult, String> {
         BANGUMI_AUTH, CLIENT_ID, "http%3A%2F%2Flocalhost%3A19840%2Fcallback", state,
     );
 
-    println!("[OAuth] Opening browser");
-    let result = app.opener().open_url(&auth_url, None::<&str>);
+    println!("[OAuth] Opening browser using shell plugin");
+    // Use shell plugin instead of opener
+    let result = app.shell().open(&auth_url, None);
     if let Err(e) = &result {
         println!("[OAuth] Failed to open browser: {}", e);
     } else {
@@ -195,7 +196,7 @@ async fn wait_oauth_callback(app: tauri::AppHandle, expected_state: String) -> R
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
