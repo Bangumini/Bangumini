@@ -1,3 +1,5 @@
+import { tauriFetch, isTauri } from "./tauri-fetch";
+
 const TOKEN_KEY = "bangumi_token";
 const REFRESH_KEY = "bangumi_refresh_token";
 const EXPIRY_KEY = "bangumi_expires_at";
@@ -6,6 +8,9 @@ const USERNAME_KEY = "bangumi_username";
 const CLIENT_ID = "bgm61886a103fe0672c1";
 const CLIENT_SECRET = "32468c5f6ba84e3528d11bd4905f1726";
 const TOKEN_URL = "https://bgm.tv/oauth/access_token";
+
+// Use tauriFetch in Tauri, native fetch in browser
+const fetchFn = isTauri() ? tauriFetch : fetch;
 
 export function isLoggedIn(): boolean {
   return !!localStorage.getItem(TOKEN_KEY);
@@ -44,7 +49,7 @@ export async function fetchAndCacheUsername(): Promise<string> {
   const token = localStorage.getItem(TOKEN_KEY);
   if (!token) return "";
   try {
-    const res = await fetch("https://api.bgm.tv/v0/me", {
+    const res = await fetchFn("https://api.bgm.tv/v0/me", {
       headers: {
         Authorization: `Bearer ${token}`,
         "User-Agent": "Bangumini/0.1",
@@ -72,7 +77,7 @@ export async function refreshAccessToken(): Promise<string | null> {
     body.append("client_secret", CLIENT_SECRET);
     body.append("refresh_token", refresh);
 
-    const res = await fetch(TOKEN_URL, {
+    const res = await fetchFn(TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),

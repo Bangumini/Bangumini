@@ -1,5 +1,5 @@
 // HTTP proxy via Tauri Rust command (bypasses WebView CORS)
-async function tauriFetch(
+export async function tauriFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
@@ -39,8 +39,7 @@ export function isTauri(): boolean {
   return !!(globalThis as Record<string, unknown>).__TAURI_INTERNALS__;
 }
 
+// DO NOT override global fetch - it breaks Tauri IPC
 export async function initTauriFetch() {
-  if (isTauri()) {
-    (globalThis as Record<string, unknown>).fetch = tauriFetch;
-  }
+  // No-op: we export tauriFetch directly instead of overriding global fetch
 }
