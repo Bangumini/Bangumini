@@ -69,7 +69,7 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<OAuthResult, String> {
     );
 
     // Open browser
-    app.opener().open_url(&auth_url, None::<tauri_plugin_opener::OpenUrlOptions>).map_err(|e| e.to_string())?;
+    app.opener().open_url(&auth_url, None).map_err(|e| e.to_string())?;
 
     // Start local HTTP server for callback
     let listener = TcpListener::bind("127.0.0.1:19840").await.map_err(|e| e.to_string())?;
