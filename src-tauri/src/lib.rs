@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use tauri::Manager;
+use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -100,8 +101,8 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<OAuthResult, String> {
             let kv: Vec<&str> = param.splitn(2, '=').collect();
             if kv.len() == 2 {
                 match kv[0] {
-                    "code" => code = urlencoding::decode(kv[1]).unwrap_or_default(),
-                    "state" => returned_state = urlencoding::decode(kv[1]).unwrap_or_default(),
+                    "code" => code = urlencoding::decode(kv[1]).unwrap_or_default().into_owned(),
+                    "state" => returned_state = urlencoding::decode(kv[1]).unwrap_or_default().into_owned(),
                     _ => {}
                 }
             }
