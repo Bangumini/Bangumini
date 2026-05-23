@@ -8,10 +8,45 @@ use tauri::Manager;
 use tauri_plugin_global_shortcut::{
     GlobalShortcutExt, Shortcut, ShortcutState as GsShortcutState,
 };
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+
+#[cfg(windows)]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+#[cfg(windows)]
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallWindowProcW, SetWindowLongPtrW, GWLP_WNDPROC, WM_SYSCOMMAND, SC_KEYMENU,
+};
+
+#[cfg(windows)]
+static OLD_WNDPROC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(windows)]
+unsafe extern "system" fn window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    // Block Alt+Space system menu
+    if msg == WM_SYSCOMMAND && wparam.0 == SC_KEYMENU as usize {
+        return LRESULT(0);
+    }
+
+    // Call the original window procedure for all other messages
+    let old_proc = OLD_WNDPROC.load(std::sync::atomic::Ordering::SeqCst);
+    CallWindowProcW(
+        std::mem::transmute(old_proc),
+        hwnd,
+        msg,
+        wparam,
+        lparam,
+    )
+}
 
 const CLIENT_ID: &str = "bgm61886a103fe0672c1";
 const CLIENT_SECRET: &str = "32468c5f6ba84e3528d11bd4905f1726";
@@ -22,6 +57,8 @@ const DEFAULT_SHORTCUT: &str = "CmdOrCtrl+Shift+B";
 struct ShortcutHolder {
     current: StdMutex<Option<(Shortcut, String)>>,
 }
+
+static IS_DRAGGING: AtomicBool = AtomicBool::new(false);
 
 fn show_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
     guard.store(true, Ordering::SeqCst);
@@ -145,9 +182,9 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<AuthUrlResult, String> {
         BANGUMI_AUTH, CLIENT_ID, "http%3A%2F%2Flocalhost%3A19840%2Fcallback", state,
     );
 
-    println!("[OAuth] Opening browser using shell plugin");
-    // Use shell plugin instead of opener
-    let result = app.shell().open(&auth_url, None);
+    println!("[OAuth] Opening browser using opener plugin");
+    // Use opener plugin instead of shell
+    let result = app.opener().open_url(&auth_url, None::<&str>);
     if let Err(e) = &result {
         println!("[OAuth] Failed to open browser: {}", e);
     } else {
@@ -252,7 +289,7 @@ async fn wait_oauth_callback(app: tauri::AppHandle, expected_state: String) -> R
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_shell::init())
+        .plugin(prevent_default_plugin())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
@@ -263,7 +300,8 @@ pub fn run() {
             wait_oauth_callback,
             get_shortcut,
             register_shortcut,
-            set_autostart
+            set_autostart,
+            set_dragging
         ])
         .setup(|app| {
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -283,15 +321,21 @@ pub fn run() {
 
             let window = app.get_webview_window("main").unwrap();
 
-            // Suppress Windows system menu (Alt / Alt+Space)
-            #[cfg(target_os = "windows")]
-            unsafe {
-                use windows::Win32::UI::WindowsAndMessaging::{
-                    GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_SYSMENU,
-                };
-                if let Ok(hwnd) = window.hwnd() {
-                    let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-                    SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_SYSMENU.0 as isize));
+            // --- Disable Alt+Space system menu on Windows ---
+            #[cfg(windows)]
+            {
+                if let Ok(handle) = window.window_handle() {
+                    if let RawWindowHandle::Win32(win32_handle) = handle.as_ref() {
+                        unsafe {
+                            let hwnd = HWND(win32_handle.hwnd.get() as *mut std::ffi::c_void);
+
+                            // Subclass the window to intercept WM_SYSCOMMAND messages
+                            let old_proc = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, window_proc as *const () as usize as isize);
+
+                            // Store the old window proc in a static for later use
+                            OLD_WNDPROC.store(old_proc as usize, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
                 }
             }
 
@@ -349,10 +393,12 @@ pub fn run() {
             // --- Window events: auto-hide on focus loss, prevent close ---
             let w_events = window.clone();
             let g_events = show_guard.clone();
+
             window.on_window_event(move |event| {
                 match event {
                     tauri::WindowEvent::Focused(false) => {
-                        if !g_events.load(Ordering::SeqCst) {
+                        // Don't hide if guard is set or currently dragging
+                        if !g_events.load(Ordering::SeqCst) && !IS_DRAGGING.load(Ordering::SeqCst) {
                             let _ = w_events.hide();
                         }
                     }
@@ -368,6 +414,29 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(debug_assertions)]
+fn prevent_default_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    use tauri_plugin_prevent_default::Flags;
+
+    // In debug mode, keep DEV_TOOLS (Ctrl+Shift+I) and RELOAD enabled
+    // Don't use browser_accelerator_keys(false) in debug mode to keep F12
+    tauri_plugin_prevent_default::Builder::new()
+        .with_flags(Flags::CONTEXT_MENU | Flags::PRINT | Flags::DOWNLOADS)
+        .build()
+}
+
+#[cfg(not(debug_assertions))]
+fn prevent_default_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    use tauri_plugin_prevent_default::{Flags, PlatformOptions};
+
+    // In release mode, disable everything including DEV_TOOLS
+    tauri_plugin_prevent_default::Builder::new()
+        .with_flags(Flags::CONTEXT_MENU | Flags::PRINT | Flags::DOWNLOADS | Flags::DEV_TOOLS)
+        .platform(PlatformOptions::new()
+            .browser_accelerator_keys(false))
+        .build()
 }
 
 #[tauri::command]
@@ -395,3 +464,10 @@ fn set_autostart(enabled: bool) -> Result<(), String> {
     if enabled { println!("Autostart enabled"); } else { println!("Autostart disabled"); }
     Ok(())
 }
+
+#[tauri::command]
+fn set_dragging(dragging: bool) -> Result<(), String> {
+    IS_DRAGGING.store(dragging, Ordering::SeqCst);
+    Ok(())
+}
+

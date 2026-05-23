@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Outlet, useNavigate, useLocation, useSearchParams } from "react-router-dom";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const TABS = [
   { path: "/", label: "搜索", key: "1" },
@@ -45,6 +47,24 @@ export default function Layout() {
   const isSearchPage = location.pathname === "/";
   const isCollections = location.pathname === "/collections";
   const isCalendar = location.pathname === "/calendar";
+
+  const handleHeaderMouseDown = async (e: React.MouseEvent) => {
+    // Only drag on left button and not on interactive elements
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'BUTTON' || target.tagName === 'INPUT' || target.tagName === 'SELECT') {
+      return;
+    }
+
+    e.preventDefault();
+    try {
+      await invoke("set_dragging", { dragging: true });
+      await getCurrentWindow().startDragging();
+    } finally {
+      // startDragging() blocks until drag ends
+      await invoke("set_dragging", { dragging: false });
+    }
+  };
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -186,7 +206,11 @@ export default function Layout() {
 
   return (
     <div className="h-screen flex flex-col bg-[#1a1a2e] text-gray-200">
-      <header data-tauri-drag-region className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 shrink-0">
+      <header
+        className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 shrink-0"
+        onMouseDown={handleHeaderMouseDown}
+        onDoubleClick={(e) => e.preventDefault()}
+      >
         <span className="text-indigo-400 font-bold mr-3 text-sm">Bangumini</span>
         <div className="flex gap-0.5 bg-gray-800/50 rounded-lg p-0.5">
           {TABS.map((tab, i) => (
