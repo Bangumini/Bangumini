@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { clearToken, setToken } from "../api/oauth";
+import ShortcutRecorder from "../components/ShortcutRecorder";
 
 export default function SettingsPage() {
   const [tokenText, setTokenText] = useState("");
@@ -43,7 +44,7 @@ export default function SettingsPage() {
 
         <div>
           <label className="block text-sm text-gray-400 mb-1">全局快捷键</label>
-          <p className="text-xs text-gray-600">（Tauri 实现后可用）</p>
+          <ShortcutRecorder />
         </div>
 
         <button

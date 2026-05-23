@@ -1,8 +1,11 @@
 import { useEffect } from "react";
 import { Routes, Route } from "react-router-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { setTokenProvider } from "@shared/api/client";
 import { getAccessToken, fetchAndCacheUsername } from "./api/oauth";
 import { useAuth } from "./hooks/useAuth";
+import { isTauri } from "./api/tauri-fetch";
+import { DEFAULT_SHORTCUT, loadStoredShortcut } from "./api/shortcut";
 import Layout from "./components/Layout";
 import SearchPage from "./pages/SearchPage";
 import CalendarPage from "./pages/CalendarPage";
@@ -21,6 +24,13 @@ export default function App() {
       fetchAndCacheUsername().catch(() => {});
     }
   }, [authenticated]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const stored = loadStoredShortcut();
+    if (stored === DEFAULT_SHORTCUT) return;
+    invoke("register_shortcut", { accelerator: stored }).catch(() => {});
+  }, []);
 
   if (authLoading) {
     return (

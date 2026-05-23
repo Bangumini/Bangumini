@@ -1,8 +1,13 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::Manager;
+use tauri_plugin_global_shortcut::{
+    GlobalShortcutExt, Shortcut, ShortcutState as GsShortcutState,
+};
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
@@ -12,6 +17,56 @@ const CLIENT_ID: &str = "bgm61886a103fe0672c1";
 const CLIENT_SECRET: &str = "32468c5f6ba84e3528d11bd4905f1726";
 const BANGUMI_AUTH: &str = "https://bgm.tv/oauth/authorize";
 const BANGUMI_TOKEN: &str = "https://bgm.tv/oauth/access_token";
+const DEFAULT_SHORTCUT: &str = "CmdOrCtrl+Shift+B";
+
+struct ShortcutHolder {
+    current: StdMutex<Option<(Shortcut, String)>>,
+}
+
+fn show_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
+    guard.store(true, Ordering::SeqCst);
+    let _ = w.show();
+    let _ = w.set_focus();
+    let g = guard.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        g.store(false, Ordering::SeqCst);
+    });
+}
+
+fn install_shortcut(app: &tauri::AppHandle, accelerator: &str) -> Result<(), String> {
+    let new_shortcut = Shortcut::from_str(accelerator)
+        .map_err(|e| format!("无效的快捷键: {}", e))?;
+
+    let holder = app.state::<ShortcutHolder>();
+    let guard_state = app.state::<Arc<AtomicBool>>();
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不存在".to_string())?;
+
+    let mut current = holder.current.lock().map_err(|e| e.to_string())?;
+    if let Some((old, _)) = current.take() {
+        let _ = app.global_shortcut().unregister(old);
+    }
+
+    let w = window.clone();
+    let g = (*guard_state).clone();
+    app.global_shortcut()
+        .on_shortcut(new_shortcut.clone(), move |_app, _s, event| {
+            if event.state() != GsShortcutState::Pressed {
+                return;
+            }
+            if let Ok(true) = w.is_visible() {
+                let _ = w.hide();
+            } else {
+                show_window(&w, &g);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    *current = Some((new_shortcut, accelerator.to_string()));
+    Ok(())
+}
 
 #[derive(serde::Deserialize)]
 struct FetchRequest {
@@ -202,9 +257,15 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
-        .invoke_handler(tauri::generate_handler![fetch_proxy, start_oauth, wait_oauth_callback, get_shortcut, set_autostart])
+        .invoke_handler(tauri::generate_handler![
+            fetch_proxy,
+            start_oauth,
+            wait_oauth_callback,
+            get_shortcut,
+            register_shortcut,
+            set_autostart
+        ])
         .setup(|app| {
-            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
@@ -213,21 +274,14 @@ pub fn run() {
 
             // Show guard: prevents Focused(false) from immediately hiding a just-shown window
             let show_guard: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            app.manage(show_guard.clone());
+
+            // Holder for the currently registered global shortcut
+            app.manage(ShortcutHolder {
+                current: StdMutex::new(None),
+            });
 
             let window = app.get_webview_window("main").unwrap();
-
-            // Helper to show window safely
-            fn show_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
-                guard.store(true, Ordering::SeqCst);
-                let _ = w.show();
-                let _ = w.set_focus();
-                // Clear guard after a short cooldown
-                let g = guard.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    g.store(false, Ordering::SeqCst);
-                });
-            }
 
             // --- Tray menu ---
             let show_hide = MenuItemBuilder::with_id("toggle", "Show/Hide").build(app)?;
@@ -277,20 +331,8 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // --- Global Shortcut ---
-            let w_shortcut = window.clone();
-            let g_shortcut = show_guard.clone();
-            let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyB);
-            app.global_shortcut().on_shortcut(shortcut, move |_app, _s, event| {
-                if event.state() != ShortcutState::Pressed {
-                    return;
-                }
-                if let Ok(true) = w_shortcut.is_visible() {
-                    let _ = w_shortcut.hide();
-                } else {
-                    show_window(&w_shortcut, &g_shortcut);
-                }
-            })?;
+            // --- Global Shortcut: register default; the frontend will re-register on startup if user has a custom one ---
+            let _ = install_shortcut(app.handle(), DEFAULT_SHORTCUT);
 
             // --- Window events: auto-hide on focus loss, prevent close ---
             let w_events = window.clone();
@@ -317,8 +359,23 @@ pub fn run() {
 }
 
 #[tauri::command]
-fn get_shortcut() -> String {
-    std::env::var("BANGUMINI_SHORTCUT").unwrap_or_else(|_| "Ctrl+Shift+B".into())
+fn get_shortcut(app: tauri::AppHandle) -> String {
+    let holder = app.state::<ShortcutHolder>();
+    holder
+        .current
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|(_, s)| s.clone()))
+        .unwrap_or_else(|| DEFAULT_SHORTCUT.to_string())
+}
+
+#[tauri::command]
+fn register_shortcut(app: tauri::AppHandle, accelerator: String) -> Result<(), String> {
+    let trimmed = accelerator.trim();
+    if trimmed.is_empty() {
+        return Err("快捷键不能为空".into());
+    }
+    install_shortcut(&app, trimmed)
 }
 
 #[tauri::command]
