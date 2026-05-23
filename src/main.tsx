@@ -12,6 +12,17 @@ if (isTauri()) {
   setFetchFunction(tauriFetch as typeof fetch);
 }
 
+// Disable right-click context menu
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// Prevent Alt key from triggering the Windows system menu
+// This allows recording shortcuts like Alt+Space without interruption
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Alt") {
+    e.preventDefault();
+  }
+});
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: { staleTime: 1000 * 60 * 5, retry: 1 },

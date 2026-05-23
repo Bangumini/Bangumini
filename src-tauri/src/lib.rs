@@ -283,6 +283,18 @@ pub fn run() {
 
             let window = app.get_webview_window("main").unwrap();
 
+            // Suppress Windows system menu (Alt / Alt+Space)
+            #[cfg(target_os = "windows")]
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_SYSMENU,
+                };
+                if let Ok(hwnd) = window.hwnd() {
+                    let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                    SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_SYSMENU.0 as isize));
+                }
+            }
+
             // --- Tray menu ---
             let show_hide = MenuItemBuilder::with_id("toggle", "Show/Hide").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
