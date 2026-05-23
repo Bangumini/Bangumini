@@ -189,7 +189,7 @@ export default function Layout() {
           {TABS.map((tab, i) => (
             <button
               key={tab.path}
-              onClick={() => navigate(tab.path)}
+              onClick={() => navigate({ pathname: tab.path, search: "" })}
               className={`px-3 py-1 text-xs rounded-md transition-colors ${i === currentTab ? "bg-indigo-600 text-white" : "text-gray-400 hover:text-gray-200"}`}
             >
               {tab.label}

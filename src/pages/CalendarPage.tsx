@@ -82,15 +82,16 @@ export default function CalendarPage() {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "SELECT") return;
-
+      const isInput = tag === "INPUT" || tag === "SELECT";
       const itemCount = displayItems.length;
 
       if (e.key === "ArrowLeft") {
+        if (isInput) return;
         e.preventDefault();
         if (isFiltering) return;
         setCurrentDay((d) => (d <= 1 ? 7 : d - 1));
       } else if (e.key === "ArrowRight") {
+        if (isInput) return;
         e.preventDefault();
         if (isFiltering) return;
         setCurrentDay((d) => (d >= 7 ? 1 : d + 1));
@@ -101,10 +102,12 @@ export default function CalendarPage() {
         e.preventDefault();
         setFocusedIndex((i) => Math.min(itemCount - 1, i + 1));
       } else if (e.key === "Enter") {
+        if (isInput) return;
         e.preventDefault();
         const item = displayItems[focusedIndex];
         if (item) navigate(`/subject/${item.id}`);
       } else if (e.key === "Home" && !isFiltering) {
+        if (isInput) return;
         e.preventDefault();
         setCurrentDay(today);
       }

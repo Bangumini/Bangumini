@@ -158,8 +158,7 @@ export default function CollectionsPage() {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "SELECT") return;
-
+      const isInput = tag === "INPUT" || tag === "SELECT";
       const itemCount = paged.length;
 
       if (e.key === "ArrowUp") {
@@ -169,12 +168,15 @@ export default function CollectionsPage() {
         e.preventDefault();
         setFocusedIndex((i) => Math.min(itemCount - 1, i + 1));
       } else if (e.key === "ArrowLeft") {
+        if (isInput) return;
         e.preventDefault();
         setPage((p) => Math.max(1, p - 1));
       } else if (e.key === "ArrowRight") {
+        if (isInput) return;
         e.preventDefault();
         setPage((p) => Math.min(totalPages, p + 1));
       } else if (e.key === "Enter") {
+        if (isInput) return;
         e.preventDefault();
         const item = paged[focusedIndex];
         if (item) {
