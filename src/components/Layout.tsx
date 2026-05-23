@@ -75,6 +75,7 @@ export default function Layout() {
         <div className="ml-auto flex gap-2">
           <input
             ref={inputRef}
+            key={location.pathname}
             defaultValue={q}
             placeholder="搜索条目…"
             className="w-48 px-3 py-1 text-sm bg-gray-800 rounded-md border border-gray-700 text-gray-200 placeholder-gray-500 focus:border-indigo-500 focus:outline-none"
@@ -112,6 +113,7 @@ export default function Layout() {
         <div className="ml-auto flex gap-2">
           <input
             ref={inputRef}
+            key={location.pathname}
             defaultValue={filter}
             placeholder="筛选日历…"
             className="w-44 px-3 py-1 text-sm bg-gray-800 rounded-md border border-gray-700 text-gray-200 placeholder-gray-500 focus:border-indigo-500 focus:outline-none"
@@ -149,6 +151,7 @@ export default function Layout() {
         <div className="ml-auto flex gap-2">
           <input
             ref={inputRef}
+            key={location.pathname}
             defaultValue={filter}
             placeholder="筛选收藏…"
             className="w-44 px-3 py-1 text-sm bg-gray-800 rounded-md border border-gray-700 text-gray-200 placeholder-gray-500 focus:border-indigo-500 focus:outline-none"
