@@ -13,11 +13,12 @@
     "windows": [
       {
         "title": "Bangumini",
-        "width": 680,
-        "height": 560,
+        "width": 1200,
+        "height": 800,
         "center": true,
-        "resizable": true,
-        "decorations": true
+        "resizable": false,
+        "decorations": false,
+        "skipTaskbar": true
       }
     ],
     "security": {

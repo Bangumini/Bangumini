@@ -204,20 +204,83 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![fetch_proxy, start_oauth, wait_oauth_callback, get_shortcut, set_autostart])
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+            use tauri::tray::TrayIconBuilder;
+            use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
             // Initialize OAuth state
             app.manage(Arc::new(Mutex::new(OAuthState { listener: None })));
 
             let window = app.get_webview_window("main").unwrap();
+
+            // --- Tray menu ---
+            let show_hide = MenuItemBuilder::with_id("toggle", "Show/Hide").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let menu = MenuBuilder::new(app)
+                .item(&show_hide)
+                .item(&quit)
+                .build()?;
+
+            // --- Tray Icon ---
+            let w_tray = window.clone();
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Bangumini")
+                .menu(&menu)
+                .on_menu_event(move |app, event| {
+                    match event.id().as_ref() {
+                        "toggle" => {
+                            if let Ok(true) = w_tray.is_visible() {
+                                let _ = w_tray.hide();
+                            } else {
+                                let _ = w_tray.show();
+                                let _ = w_tray.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(move |tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                        if let Ok(true) = tray.app_handle().get_webview_window("main").unwrap().is_visible() {
+                            let _ = tray.app_handle().get_webview_window("main").unwrap().hide();
+                        } else {
+                            let _ = tray.app_handle().get_webview_window("main").unwrap().show();
+                            let _ = tray.app_handle().get_webview_window("main").unwrap().set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            // --- Global Shortcut ---
+            let w_shortcut = window.clone();
             let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyB);
             app.global_shortcut().on_shortcut(shortcut, move |_app, _s, _e| {
-                if let Ok(true) = window.is_visible() {
-                    let _ = window.hide();
+                if let Ok(true) = w_shortcut.is_visible() {
+                    let _ = w_shortcut.hide();
                 } else {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    let _ = w_shortcut.show();
+                    let _ = w_shortcut.set_focus();
                 }
             })?;
+
+            // --- Window events: auto-hide on focus loss, prevent close ---
+            let w_events = window.clone();
+            window.on_window_event(move |event| {
+                match event {
+                    tauri::WindowEvent::Focused(false) => {
+                        let _ = w_events.hide();
+                    }
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let _ = w_events.hide();
+                    }
+                    _ => {}
+                }
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

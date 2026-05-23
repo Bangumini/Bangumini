@@ -23,3 +23,13 @@ input:focus-visible, button:focus-visible {
   outline: 2px solid #6366f1;
   outline-offset: -2px;
 }
+
+/* Tauri frameless drag region */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] select {
+  -webkit-app-region: no-drag;
+}

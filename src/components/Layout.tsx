@@ -186,7 +186,7 @@ export default function Layout() {
 
   return (
     <div className="h-screen flex flex-col bg-[#1a1a2e] text-gray-200">
-      <header className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 shrink-0">
+      <header data-tauri-drag-region className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 shrink-0">
         <span className="text-indigo-400 font-bold mr-3 text-sm">Bangumini</span>
         <div className="flex gap-0.5 bg-gray-800/50 rounded-lg p-0.5">
           {TABS.map((tab, i) => (
