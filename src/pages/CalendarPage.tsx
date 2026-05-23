@@ -23,11 +23,11 @@ export default function CalendarPage() {
     itemRefs.current = [];
   }, [currentDay]);
 
-  // Scroll focused item into view
+  // Scroll focused item into view, keep it centered
   useEffect(() => {
     const item = itemRefs.current[focusedIndex];
     if (item) {
-      item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      item.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [focusedIndex]);
 
@@ -74,55 +74,23 @@ export default function CalendarPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header with day selector */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-700">
-        <button
-          onClick={() => setCurrentDay((d) => (d <= 1 ? 7 : d - 1))}
-          className="px-3 py-1.5 text-sm bg-gray-800 hover:bg-gray-700 rounded transition-colors"
-        >
-          ← 前一天
-        </button>
-
-        <div className="flex items-center gap-3">
-          <select
-            value={currentDay}
-            onChange={(e) => setCurrentDay(Number(e.target.value))}
-            className="px-3 py-1.5 text-sm bg-gray-800 border border-gray-600 rounded focus:border-indigo-500 focus:outline-none"
-          >
-            {[1, 2, 3, 4, 5, 6, 7].map((id) => (
-              <option key={id} value={id}>
-                {WEEKDAY_CN[id]}{id === today ? " · 今天" : ""}
-              </option>
-            ))}
-          </select>
-
-          {!isToday && (
-            <button
-              onClick={() => setCurrentDay(today)}
-              className="px-3 py-1.5 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-            >
-              回到今天
-            </button>
-          )}
-        </div>
-
-        <button
-          onClick={() => setCurrentDay((d) => (d >= 7 ? 1 : d + 1))}
-          className="px-3 py-1.5 text-sm bg-gray-800 hover:bg-gray-700 rounded transition-colors"
-        >
-          后一天 →
-        </button>
-      </div>
-
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4">
-        <div className="mb-3">
+        <div className="flex items-center justify-between mb-3">
           <h2 className={`text-lg font-medium ${isToday ? "text-indigo-400" : "text-gray-300"}`}>
             {WEEKDAY_CN[currentDay]}
             {isToday && " · 今天"}
+            {currentDayData?.weekday.ja && (
+              <span className="text-xs text-gray-500 ml-2">{currentDayData.weekday.ja}</span>
+            )}
           </h2>
-          {currentDayData?.weekday.ja && (
-            <p className="text-xs text-gray-500 mt-0.5">{currentDayData.weekday.ja}</p>
+          {!isToday && (
+            <button
+              onClick={() => setCurrentDay(today)}
+              className="px-2 py-1 text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+            >
+              回到今天
+            </button>
           )}
         </div>
 
