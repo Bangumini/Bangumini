@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::Manager;
 use tauri_plugin_shell::ShellExt;
@@ -210,7 +211,23 @@ pub fn run() {
             // Initialize OAuth state
             app.manage(Arc::new(Mutex::new(OAuthState { listener: None })));
 
+            // Show guard: prevents Focused(false) from immediately hiding a just-shown window
+            let show_guard: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
             let window = app.get_webview_window("main").unwrap();
+
+            // Helper to show window safely
+            fn show_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
+                guard.store(true, Ordering::SeqCst);
+                let _ = w.show();
+                let _ = w.set_focus();
+                // Clear guard after a short cooldown
+                let g = guard.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    g.store(false, Ordering::SeqCst);
+                });
+            }
 
             // --- Tray menu ---
             let show_hide = MenuItemBuilder::with_id("toggle", "Show/Hide").build(app)?;
@@ -222,6 +239,8 @@ pub fn run() {
 
             // --- Tray Icon ---
             let w_tray = window.clone();
+            let g_menu = show_guard.clone();
+            let g_click = show_guard.clone();
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Bangumini")
@@ -229,11 +248,10 @@ pub fn run() {
                 .on_menu_event(move |app, event| {
                     match event.id().as_ref() {
                         "toggle" => {
-                            if let Ok(true) = w_tray.is_visible() {
+                            if w_tray.is_visible().unwrap_or(false) {
                                 let _ = w_tray.hide();
                             } else {
-                                let _ = w_tray.show();
-                                let _ = w_tray.set_focus();
+                                show_window(&w_tray, &g_menu);
                             }
                         }
                         "quit" => {
@@ -244,11 +262,11 @@ pub fn run() {
                 })
                 .on_tray_icon_event(move |tray, event| {
                     if let tauri::tray::TrayIconEvent::Click { .. } = event {
-                        if let Ok(true) = tray.app_handle().get_webview_window("main").unwrap().is_visible() {
-                            let _ = tray.app_handle().get_webview_window("main").unwrap().hide();
+                        let w = tray.app_handle().get_webview_window("main").unwrap();
+                        if w.is_visible().unwrap_or(false) {
+                            let _ = w.hide();
                         } else {
-                            let _ = tray.app_handle().get_webview_window("main").unwrap().show();
-                            let _ = tray.app_handle().get_webview_window("main").unwrap().set_focus();
+                            show_window(&w, &g_click);
                         }
                     }
                 })
@@ -256,22 +274,25 @@ pub fn run() {
 
             // --- Global Shortcut ---
             let w_shortcut = window.clone();
+            let g_shortcut = show_guard.clone();
             let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyB);
             app.global_shortcut().on_shortcut(shortcut, move |_app, _s, _e| {
                 if let Ok(true) = w_shortcut.is_visible() {
                     let _ = w_shortcut.hide();
                 } else {
-                    let _ = w_shortcut.show();
-                    let _ = w_shortcut.set_focus();
+                    show_window(&w_shortcut, &g_shortcut);
                 }
             })?;
 
             // --- Window events: auto-hide on focus loss, prevent close ---
             let w_events = window.clone();
+            let g_events = show_guard.clone();
             window.on_window_event(move |event| {
                 match event {
                     tauri::WindowEvent::Focused(false) => {
-                        let _ = w_events.hide();
+                        if !g_events.load(Ordering::SeqCst) {
+                            let _ = w_events.hide();
+                        }
                     }
                     tauri::WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
