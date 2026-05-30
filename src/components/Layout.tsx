@@ -101,16 +101,17 @@ export default function Layout() {
     function onKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
       const isInput = target.tagName === "INPUT" || target.tagName === "SELECT";
+      const mod = e.metaKey || e.ctrlKey;
 
       // Tab toggles the sidebar (unless typing in a field)
-      if (e.key === "Tab" && !isInput && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === "Tab" && !isInput && !mod && !e.altKey) {
         e.preventDefault();
         setCollapsed((v) => !v);
         return;
       }
 
-      // Ctrl/Cmd + Up/Down cycles through sidebar tabs
-      if ((e.metaKey || e.ctrlKey) && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      // Ctrl/Cmd + Up/Down cycles through sidebar tabs (works even while typing)
+      if (mod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
         e.preventDefault();
         const dir = e.key === "ArrowDown" ? 1 : -1;
         const from = currentTabRef.current < 0 ? 0 : currentTabRef.current;
@@ -119,18 +120,26 @@ export default function Layout() {
         return;
       }
 
-      if (isInput) return;
-
-      if (e.metaKey || e.ctrlKey) {
+      // Ctrl/Cmd + 1..4 jumps to a tab; Ctrl/Cmd + K refocuses the input.
+      // Both work even while typing so navigation never requires leaving the input.
+      if (mod) {
         const tab = TABS.find((t) => t.key === e.key);
         if (tab) {
           e.preventDefault();
           navigate({ pathname: tab.path, search: "" });
           return;
         }
+        if (e.key === "k") {
+          e.preventDefault();
+          inputRef.current?.focus();
+          return;
+        }
       }
 
-      if (e.key === "/" || (e.key === "k" && (e.metaKey || e.ctrlKey))) {
+      if (isInput) return;
+
+      // "/" jumps into the input when focus happens to be elsewhere
+      if (e.key === "/") {
         e.preventDefault();
         inputRef.current?.focus();
       }
@@ -138,6 +147,18 @@ export default function Layout() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [navigate]);
+
+  // Persistent input: keep the page's search/filter box focused so the user can
+  // type immediately on every page and after the window is re-summoned.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const refocus = () => inputRef.current?.focus();
+    window.addEventListener("focus", refocus);
+    return () => window.removeEventListener("focus", refocus);
+  }, []);
 
   const filterBar = (() => {
     if (isSearchPage) {
@@ -357,7 +378,8 @@ export default function Layout() {
         <footer className="flex items-center gap-4 h-9 px-4 border-t border-line shrink-0 bg-panel/40">
           <KeyHint k="↵" label="打开" />
           <KeyHint k="↑↓" label="选择" />
-          <KeyHint k="⌃↑↓" label="切换页" />
+          <KeyHint k="⌃←→" label="翻页" />
+          <KeyHint k="⌃↑↓" label="切标签" />
           <KeyHint k="Tab" label="侧边栏" />
           <div className="ml-auto flex items-center gap-1.5 text-fg-tertiary text-[12px]">
             <SearchIcon size={13} />

@@ -158,12 +158,21 @@ export default function CollectionsPage() {
   // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      const tag = (e.target as HTMLElement)?.tagName;
-      const isInput = tag === "INPUT" || tag === "SELECT";
       const itemCount = paged.length;
+      const mod = e.ctrlKey || e.metaKey;
 
-      // Ctrl/Cmd + arrows are reserved for sidebar tab switching (handled in Layout)
-      if (e.ctrlKey || e.metaKey) return;
+      // Ctrl/Cmd + Left/Right = pagination. (Ctrl/Cmd + Up/Down switches sidebar
+      // tabs and is handled in Layout, so we ignore those here.)
+      if (mod) {
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          setPage((p) => Math.max(1, p - 1));
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          setPage((p) => Math.min(totalPages, p + 1));
+        }
+        return;
+      }
 
       if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -171,16 +180,7 @@ export default function CollectionsPage() {
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
         setFocusedIndex((i) => Math.min(itemCount - 1, i + 1));
-      } else if (e.key === "ArrowLeft") {
-        if (isInput) return;
-        e.preventDefault();
-        setPage((p) => Math.max(1, p - 1));
-      } else if (e.key === "ArrowRight") {
-        if (isInput) return;
-        e.preventDefault();
-        setPage((p) => Math.min(totalPages, p + 1));
       } else if (e.key === "Enter") {
-        if (isInput) return;
         e.preventDefault();
         const item = paged[focusedIndex];
         if (item) {
@@ -198,7 +198,7 @@ export default function CollectionsPage() {
       <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0">
         {searchText
           ? `搜索 · 共 ${filtered.length} 条`
-          : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条`}
+          : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条${totalPages > 1 ? " · ⌃←→ 翻页" : ""}`}
       </div>
 
       {/* Scrollable list */}

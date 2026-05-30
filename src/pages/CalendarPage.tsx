@@ -82,36 +82,33 @@ export default function CalendarPage() {
   // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      const tag = (e.target as HTMLElement)?.tagName;
-      const isInput = tag === "INPUT" || tag === "SELECT";
       const itemCount = displayItems.length;
+      const mod = e.ctrlKey || e.metaKey;
 
-      // Ctrl/Cmd + arrows are reserved for sidebar tab switching (handled in Layout)
-      if (e.ctrlKey || e.metaKey) return;
+      // Ctrl/Cmd + Left/Right = switch day. (Ctrl/Cmd + Up/Down switches sidebar
+      // tabs and is handled in Layout, so we ignore those here.)
+      if (mod) {
+        if (e.key === "ArrowLeft" && !isFiltering) {
+          e.preventDefault();
+          setCurrentDay((d) => (d <= 1 ? 7 : d - 1));
+        } else if (e.key === "ArrowRight" && !isFiltering) {
+          e.preventDefault();
+          setCurrentDay((d) => (d >= 7 ? 1 : d + 1));
+        }
+        return;
+      }
 
-      if (e.key === "ArrowLeft") {
-        if (isInput) return;
-        e.preventDefault();
-        if (isFiltering) return;
-        setCurrentDay((d) => (d <= 1 ? 7 : d - 1));
-      } else if (e.key === "ArrowRight") {
-        if (isInput) return;
-        e.preventDefault();
-        if (isFiltering) return;
-        setCurrentDay((d) => (d >= 7 ? 1 : d + 1));
-      } else if (e.key === "ArrowUp") {
+      if (e.key === "ArrowUp") {
         e.preventDefault();
         setFocusedIndex((i) => Math.max(0, i - 1));
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
         setFocusedIndex((i) => Math.min(itemCount - 1, i + 1));
       } else if (e.key === "Enter") {
-        if (isInput) return;
         e.preventDefault();
         const item = displayItems[focusedIndex];
         if (item) navigate(`/subject/${item.id}`);
       } else if (e.key === "Home" && !isFiltering) {
-        if (isInput) return;
         e.preventDefault();
         setCurrentDay(today);
       }
@@ -197,7 +194,7 @@ export default function CalendarPage() {
                 )}
               </h2>
               <div className="flex items-center gap-3">
-                <span className="text-[12px] text-fg-tertiary">← → 切换日期</span>
+                <span className="text-[12px] text-fg-tertiary">⌃ ← → 切换日期</span>
                 {!isToday && (
                   <button
                     onClick={() => setCurrentDay(today)}

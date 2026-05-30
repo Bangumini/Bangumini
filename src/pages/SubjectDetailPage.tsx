@@ -165,8 +165,8 @@ export default function SubjectDetailPage() {
 
       if (isInput) return;
 
-      // Backspace: go back
-      if (e.key === "Backspace") {
+      // Backspace or Esc: go back (Esc only reaches here when the palette is closed)
+      if (e.key === "Backspace" || e.key === "Escape") {
         e.preventDefault();
         handleBack();
         return;
