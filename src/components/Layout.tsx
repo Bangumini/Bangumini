@@ -101,13 +101,22 @@ export default function Layout() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
-      const isInput = target.tagName === "INPUT" || target.tagName === "SELECT";
+      const isInput = target.tagName === "INPUT";
+      const isSelect = target.tagName === "SELECT";
       const mod = e.metaKey || e.ctrlKey;
 
-      // Tab toggles the sidebar (unless typing in a field)
-      if (e.key === "Tab" && !isInput && !mod && !e.altKey) {
+      // Tab toggles the sidebar (prevent default tab behavior on input)
+      if (e.key === "Tab" && !mod && !e.altKey) {
         e.preventDefault();
         setCollapsed((v) => !v);
+        return;
+      }
+
+      // Ctrl/Cmd + P focuses the select dropdown (works even while typing in input)
+      if (mod && e.key === "p") {
+        e.preventDefault();
+        const select = document.querySelector("select") as HTMLSelectElement | null;
+        select?.focus();
         return;
       }
 
@@ -137,7 +146,7 @@ export default function Layout() {
         }
       }
 
-      if (isInput) return;
+      if (isInput || isSelect) return;
 
       // "/" jumps into the input when focus happens to be elsewhere
       if (e.key === "/") {

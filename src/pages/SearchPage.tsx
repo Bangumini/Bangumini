@@ -49,7 +49,15 @@ export default function SearchPage() {
   // Keyboard navigation over results (works while the search box stays focused).
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey || e.metaKey) return; // reserved for sidebar / global shortcuts
+      const mod = e.ctrlKey || e.metaKey;
+
+      // When search box is empty, allow plain Left/Right for pagination
+      if (!keyword && !mod && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        // Let CollectionsPage/CalendarPage handle pagination
+        return;
+      }
+
+      if (mod) return; // reserved for sidebar / global shortcuts
       const count = subjects.length;
       if (count === 0) return;
       if (e.key === "ArrowUp") {
@@ -68,7 +76,7 @@ export default function SearchPage() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [subjects, focusedIndex, navigate]);
+  }, [subjects, focusedIndex, navigate, keyword]);
 
   if (!keyword) return <EmptyState>输入关键词开始搜索</EmptyState>;
   if (error) return <EmptyState>搜索出错: {String(error)}</EmptyState>;
