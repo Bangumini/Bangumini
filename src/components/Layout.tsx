@@ -368,7 +368,7 @@ export default function Layout() {
     <div className="h-screen flex text-fg overflow-hidden">
       {/* Sidebar */}
       <aside
-        className={`shrink-0 flex flex-col bg-panel border-r border-line transition-[width] duration-200 ease-out ${
+        className={`shrink-0 flex flex-col bg-panel border-r border-line transition-all duration-150 ease-in-out ${
           collapsed ? "w-[60px]" : "w-[196px]"
         }`}
       >
@@ -443,6 +443,7 @@ export default function Layout() {
 
         <footer className="flex items-center gap-4 h-9 px-4 border-t border-line shrink-0 bg-panel/40">
           <KeyHint k="↵" label="打开" />
+          <KeyHint k={`${MOD}↵`} label="复制名称" />
           <KeyHint k="↑↓" label="选择" />
           <KeyHint k={`${MOD}←→`} label="翻页" />
           <KeyHint k={`${MOD}↑↓`} label="切标签" />

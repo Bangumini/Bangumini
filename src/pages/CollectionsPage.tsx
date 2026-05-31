@@ -27,6 +27,7 @@ export default function CollectionsPage() {
   const [page, setPage] = useState(1);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [copyNotification, setCopyNotification] = useState(false);
   const isWatching = collectionType === "3";
   const today = getTodayBangumiWeekday();
 
@@ -170,8 +171,12 @@ export default function CollectionsPage() {
         if (item) {
           const name = item.subject.name_cn || item.subject.name;
           navigator.clipboard.writeText(name).then(async () => {
-            const { getCurrentWindow } = await import("@tauri-apps/api/window");
-            getCurrentWindow().hide();
+            setCopyNotification(true);
+            setTimeout(() => setCopyNotification(false), 800);
+            setTimeout(async () => {
+              const { getCurrentWindow } = await import("@tauri-apps/api/window");
+              getCurrentWindow().hide();
+            }, 300);
           });
         }
         return;
@@ -210,7 +215,14 @@ export default function CollectionsPage() {
   }, [paged.length, focusedIndex, page, totalPages, navigate, searchText]);
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="relative h-full flex flex-col">
+      {/* Copy notification */}
+      {copyNotification && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-success text-white text-[13px] font-medium rounded-md shadow-lg animate-fade-in">
+          已复制条目名
+        </div>
+      )}
+
       {/* Page indicator */}
       <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0">
         {searchText

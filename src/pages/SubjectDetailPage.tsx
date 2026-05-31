@@ -33,7 +33,9 @@ export default function SubjectDetailPage() {
   const [loading, setLoading] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
+  const [copyNotification, setCopyNotification] = useState(false);
   const initialEpStatus = useRef<number | null>(null);
+  const leftColumnRef = useRef<HTMLDivElement>(null);
 
   const { data: subject } = useQuery({
     queryKey: ["subject", subjectId],
@@ -149,8 +151,12 @@ export default function SubjectDetailPage() {
           const name = subject?.name_cn || subject?.name || "";
           if (name) {
             navigator.clipboard.writeText(name).then(async () => {
-              const { getCurrentWindow } = await import("@tauri-apps/api/window");
-              getCurrentWindow().hide();
+              setCopyNotification(true);
+              setTimeout(() => setCopyNotification(false), 800);
+              setTimeout(async () => {
+                const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                getCurrentWindow().hide();
+              }, 300);
             });
           }
           return;
@@ -198,6 +204,21 @@ export default function SubjectDetailPage() {
         return;
       }
 
+      // ArrowUp/ArrowDown: scroll left column when no episodes or not adjusting progress
+      if (totalEp <= 0 || !isDirty) {
+        if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+          e.preventDefault();
+          const scrollAmount = 100;
+          if (leftColumnRef.current) {
+            leftColumnRef.current.scrollBy({
+              top: e.key === "ArrowDown" ? scrollAmount : -scrollAmount,
+              behavior: "smooth"
+            });
+          }
+          return;
+        }
+      }
+
       if (totalEp <= 0) return;
 
       // ArrowRight: increment target episode
@@ -232,7 +253,14 @@ export default function SubjectDetailPage() {
   });
 
   return (
-    <div className="h-screen flex flex-col text-fg bg-surface/90">
+    <div className="relative h-screen flex flex-col text-fg bg-surface/90">
+      {/* Copy notification */}
+      {copyNotification && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-success text-white text-[13px] font-medium rounded-md shadow-lg animate-fade-in">
+          已复制条目名
+        </div>
+      )}
+
       {/* Header */}
       <header className="flex items-center gap-2 h-12 px-3 border-b border-line shrink-0">
         <button
@@ -261,7 +289,7 @@ export default function SubjectDetailPage() {
       {/* Two-column body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left column: scrollable content */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-6">
+        <div ref={leftColumnRef} className="flex-1 overflow-y-auto p-5 space-y-6">
           {subject?.summary && (
             <section>
               <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">简介</h3>
@@ -353,6 +381,8 @@ export default function SubjectDetailPage() {
                   />
                 </div>
                 {isDirty && <p className="text-[12px] text-fg-tertiary mt-1.5">按 Enter 提交 · ← → 调整</p>}
+                {!isDirty && totalEp > 0 && <p className="text-[12px] text-fg-tertiary mt-1.5">← → 调整进度</p>}
+                {(totalEp <= 0 || !isDirty) && <p className="text-[12px] text-fg-tertiary mt-1.5">↑ ↓ 滚动内容</p>}
               </div>
             )}
           </div>
@@ -396,11 +426,25 @@ export default function SubjectDetailPage() {
       )}
 
       {/* Ctrl+K hint in bottom-right corner */}
-      <div className="fixed bottom-4 right-4 flex items-center gap-1.5 text-[12px] text-fg-tertiary pointer-events-none">
-        <kbd className="inline-flex h-5 items-center px-1.5 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
-          {MOD} K
-        </kbd>
-        菜单
+      <div className="fixed bottom-4 right-4 flex flex-col items-end gap-1.5 text-[12px] text-fg-tertiary pointer-events-none">
+        <div className="flex items-center gap-1.5">
+          <kbd className="inline-flex h-5 items-center px-1.5 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+            {MOD} K
+          </kbd>
+          菜单
+        </div>
+        <div className="flex items-center gap-1.5">
+          <kbd className="inline-flex h-5 items-center px-1.5 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+            {MOD} ↵
+          </kbd>
+          复制名称
+        </div>
+        <div className="flex items-center gap-1.5">
+          <kbd className="inline-flex h-5 items-center px-1.5 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+            {MOD} O
+          </kbd>
+          浏览器打开
+        </div>
       </div>
     </div>
   );

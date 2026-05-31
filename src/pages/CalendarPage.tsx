@@ -15,6 +15,7 @@ export default function CalendarPage() {
   const [currentDay, setCurrentDay] = useState<number>(today);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [copyNotification, setCopyNotification] = useState(false);
 
   const filterText = searchParams.get("filter") ?? "";
   const filterWeekday = searchParams.get("weekday") ?? "";
@@ -93,8 +94,12 @@ export default function CalendarPage() {
         if (item) {
           const name = item.name_cn || item.name;
           navigator.clipboard.writeText(name).then(async () => {
-            const { getCurrentWindow } = await import("@tauri-apps/api/window");
-            getCurrentWindow().hide();
+            setCopyNotification(true);
+            setTimeout(() => setCopyNotification(false), 800);
+            setTimeout(async () => {
+              const { getCurrentWindow } = await import("@tauri-apps/api/window");
+              getCurrentWindow().hide();
+            }, 300);
           });
         }
         return;
@@ -140,7 +145,14 @@ export default function CalendarPage() {
   if (!calendar || calendar.length === 0) return <p className="p-4 text-fg-tertiary text-[13px]">暂无放送数据</p>;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="relative flex flex-col h-full">
+      {/* Copy notification */}
+      {copyNotification && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-success text-white text-[13px] font-medium rounded-md shadow-lg animate-fade-in">
+          已复制条目名
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto p-2.5">
         {isFiltering ? (
           <>
