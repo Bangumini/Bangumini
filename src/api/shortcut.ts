@@ -7,6 +7,12 @@ export const DEFAULT_SHORTCUT = "CmdOrCtrl+Shift+B";
 const isMac =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
+export { isMac };
+
+// Platform-appropriate label for the primary modifier used by in-app shortcuts
+// (bound to Ctrl on Windows/Linux, Cmd on macOS).
+export const MOD = isMac ? "⌘" : "Ctrl";
+
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
 
 export interface ParsedShortcut {

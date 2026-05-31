@@ -12,6 +12,7 @@ import {
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import { getUsername } from "../api/oauth";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
+import { MOD } from "../api/shortcut";
 
 const LIMIT = 20;
 
@@ -198,7 +199,7 @@ export default function CollectionsPage() {
       <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0">
         {searchText
           ? `搜索 · 共 ${filtered.length} 条`
-          : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条${totalPages > 1 ? " · ⌃←→ 翻页" : ""}`}
+          : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条${totalPages > 1 ? ` · ${MOD}←→ 翻页` : ""}`}
       </div>
 
       {/* Scrollable list */}

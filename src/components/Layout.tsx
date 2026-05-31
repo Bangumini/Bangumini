@@ -9,6 +9,7 @@ import {
   SettingsIcon,
   SidebarIcon,
 } from "./icons";
+import { MOD } from "../api/shortcut";
 
 const TABS = [
   { path: "/", label: "搜索", key: "1", Icon: SearchIcon },
@@ -178,9 +179,15 @@ export default function Layout() {
               placeholder="搜索条目…"
               className="w-full pl-9 pr-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
               onKeyDown={(e) => {
-                if (e.key === "Enter" && e.currentTarget.value.trim()) {
+                if (e.key !== "Enter") return;
+                const val = e.currentTarget.value.trim();
+                // Only (re)submit when the query actually changed. For an
+                // unchanged query, let the event reach SearchPage so Enter
+                // opens the currently focused result instead of re-searching.
+                if (val && val !== q) {
+                  e.nativeEvent.stopImmediatePropagation();
                   const params = new URLSearchParams();
-                  params.set("q", e.currentTarget.value.trim());
+                  params.set("q", val);
                   if (stype) params.set("stype", stype);
                   setSearchParams(params);
                 }
@@ -342,7 +349,7 @@ export default function Layout() {
                 {!collapsed && <span className="truncate">{tab.label}</span>}
                 {!collapsed && (
                   <kbd className="ml-auto text-[11px] text-fg-tertiary opacity-0 group-hover:opacity-100 transition-opacity">
-                    ⌘{tab.key}
+                    {MOD}{tab.key}
                   </kbd>
                 )}
               </button>
@@ -378,13 +385,9 @@ export default function Layout() {
         <footer className="flex items-center gap-4 h-9 px-4 border-t border-line shrink-0 bg-panel/40">
           <KeyHint k="↵" label="打开" />
           <KeyHint k="↑↓" label="选择" />
-          <KeyHint k="⌃←→" label="翻页" />
-          <KeyHint k="⌃↑↓" label="切标签" />
+          <KeyHint k={`${MOD}←→`} label="翻页" />
+          <KeyHint k={`${MOD}↑↓`} label="切标签" />
           <KeyHint k="Tab" label="侧边栏" />
-          <div className="ml-auto flex items-center gap-1.5 text-fg-tertiary text-[12px]">
-            <SearchIcon size={13} />
-            <span>{"⌘K 搜索"}</span>
-          </div>
         </footer>
       </div>
     </div>

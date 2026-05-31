@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { searchSubjects } from "@shared/api/client";
@@ -19,6 +20,8 @@ export default function SearchPage() {
   const navigate = useNavigate();
   const keyword = searchParams.get("q") ?? "";
   const typeFilter = searchParams.get("stype") ?? "";
+  const [focusedIndex, setFocusedIndex] = useState(0);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["search", keyword, typeFilter],
@@ -33,6 +36,40 @@ export default function SearchPage() {
 
   const subjects = data?.data ?? [];
 
+  // Select the first result whenever the result set changes.
+  useEffect(() => {
+    setFocusedIndex(0);
+    itemRefs.current = [];
+  }, [keyword, typeFilter]);
+
+  useEffect(() => {
+    itemRefs.current[focusedIndex]?.scrollIntoView({ block: "nearest" });
+  }, [focusedIndex, subjects.length]);
+
+  // Keyboard navigation over results (works while the search box stays focused).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.ctrlKey || e.metaKey) return; // reserved for sidebar / global shortcuts
+      const count = subjects.length;
+      if (count === 0) return;
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFocusedIndex((i) => Math.max(0, i - 1));
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFocusedIndex((i) => Math.min(count - 1, i + 1));
+      } else if (e.key === "Enter") {
+        const s = subjects[focusedIndex];
+        if (s) {
+          e.preventDefault();
+          navigate(`/subject/${s.id}`);
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [subjects, focusedIndex, navigate]);
+
   if (!keyword) return <EmptyState>输入关键词开始搜索</EmptyState>;
   if (error) return <EmptyState>搜索出错: {String(error)}</EmptyState>;
   if (isLoading) return <EmptyState>搜索中…</EmptyState>;
@@ -40,12 +77,14 @@ export default function SearchPage() {
 
   return (
     <div className="p-2.5 space-y-0.5">
-      {subjects.map((s) => (
+      {subjects.map((s, i) => (
         <SubjectRow
           key={s.id}
+          ref={(el) => { itemRefs.current[i] = el; }}
           coverUrl={s.images?.small}
           title={s.name_cn || s.name}
           subtitle={s.name_cn ? s.name : undefined}
+          selected={i === focusedIndex}
           onClick={() => navigate(`/subject/${s.id}`)}
           accessories={
             <>
@@ -58,4 +97,5 @@ export default function SearchPage() {
     </div>
   );
 }
+
 

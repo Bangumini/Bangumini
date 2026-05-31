@@ -6,6 +6,7 @@ import { WEEKDAY_CN, getTodayBangumiWeekday } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import type { SubjectSmall } from "@shared/api/types";
 import { SubjectRow, Rating, Meta } from "../components/SubjectRow";
+import { MOD } from "../api/shortcut";
 
 export default function CalendarPage() {
   const navigate = useNavigate();
@@ -194,7 +195,7 @@ export default function CalendarPage() {
                 )}
               </h2>
               <div className="flex items-center gap-3">
-                <span className="text-[12px] text-fg-tertiary">⌃ ← → 切换日期</span>
+                <span className="text-[12px] text-fg-tertiary">{MOD} ← → 切换日期</span>
                 {!isToday && (
                   <button
                     onClick={() => setCurrentDay(today)}

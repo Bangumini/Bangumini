@@ -5,6 +5,7 @@ import {
   DEFAULT_SHORTCUT,
   eventToAccelerator,
   formatAccelerator,
+  isMac,
   loadStoredShortcut,
   saveStoredShortcut,
 } from "../api/shortcut";
@@ -156,8 +157,12 @@ function buildLiveDraft(e: KeyboardEvent): string {
 }
 
 function humanize(part: string): string {
-  if (part === "Cmd") return "⌘";
-  if (part === "Shift") return "⇧";
-  if (part === "Alt") return "⌥";
+  if (isMac) {
+    if (part === "Cmd") return "⌘";
+    if (part === "Shift") return "⇧";
+    if (part === "Alt") return "⌥";
+    return part;
+  }
+  if (part === "Cmd") return "Win";
   return part;
 }

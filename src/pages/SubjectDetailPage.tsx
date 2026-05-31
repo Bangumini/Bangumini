@@ -14,6 +14,7 @@ import { CollectionTypeLabel } from "@shared/api/types";
 import type { CollectionType } from "@shared/api/types";
 import { getUsername } from "../api/oauth";
 import { ChevronLeftIcon, ExternalIcon } from "../components/icons";
+import { MOD } from "../api/shortcut";
 
 const COLLECTION_OPTIONS: { type: CollectionType; label: string; key: string }[] = [
   { type: 1, label: "想看", key: "1" },
@@ -220,9 +221,15 @@ export default function SubjectDetailPage() {
           {subject?.name_cn || subject?.name || "条目详情"}
         </span>
         {loading && <span className="text-[12px] text-fg-tertiary animate-pulse">保存中…</span>}
+        <span className="ml-auto flex items-center gap-1.5 text-[12px] text-fg-tertiary">
+          <kbd className="inline-flex h-5 items-center px-1.5 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+            {MOD} K
+          </kbd>
+          菜单
+        </span>
         <button
           onClick={() => window.open(`https://bgm.tv/subject/${subjectId}`)}
-          className="ml-auto flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-fg-secondary hover:bg-hover hover:text-fg transition-colors"
+          className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-fg-secondary hover:bg-hover hover:text-fg transition-colors"
         >
           Bangumi
           <ExternalIcon size={13} />
