@@ -116,7 +116,12 @@ export default function Layout() {
       if (mod && e.key === "p") {
         e.preventDefault();
         const select = document.querySelector("select") as HTMLSelectElement | null;
-        select?.focus();
+        if (select) {
+          select.focus();
+          // Trigger the dropdown to open by dispatching a mousedown event
+          const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+          select.dispatchEvent(event);
+        }
         return;
       }
 

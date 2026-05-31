@@ -88,13 +88,16 @@ export default function CalendarPage() {
 
       // Ctrl/Cmd + Left/Right = switch day. (Ctrl/Cmd + Up/Down switches sidebar
       // tabs and is handled in Layout, so we ignore those here.)
-      if (mod) {
-        if (e.key === "ArrowLeft" && !isFiltering) {
-          e.preventDefault();
-          setCurrentDay((d) => (d <= 1 ? 7 : d - 1));
-        } else if (e.key === "ArrowRight" && !isFiltering) {
-          e.preventDefault();
-          setCurrentDay((d) => (d >= 7 ? 1 : d + 1));
+      // Also allow plain Left/Right when not filtering.
+      if ((mod || !isFiltering) && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        if (!isFiltering) {
+          if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            setCurrentDay((d) => (d <= 1 ? 7 : d - 1));
+          } else if (e.key === "ArrowRight") {
+            e.preventDefault();
+            setCurrentDay((d) => (d >= 7 ? 1 : d + 1));
+          }
         }
         return;
       }

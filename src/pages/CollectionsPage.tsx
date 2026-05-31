@@ -164,7 +164,8 @@ export default function CollectionsPage() {
 
       // Ctrl/Cmd + Left/Right = pagination. (Ctrl/Cmd + Up/Down switches sidebar
       // tabs and is handled in Layout, so we ignore those here.)
-      if (mod) {
+      // Also allow plain Left/Right when coming from search page with empty query.
+      if ((mod || !searchText) && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         if (e.key === "ArrowLeft") {
           e.preventDefault();
           setPage((p) => Math.max(1, p - 1));
@@ -191,7 +192,7 @@ export default function CollectionsPage() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [paged, focusedIndex, page, totalPages, navigate]);
+  }, [paged, focusedIndex, page, totalPages, navigate, searchText]);
 
   return (
     <div className="h-full flex flex-col">
