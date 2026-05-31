@@ -479,15 +479,8 @@ fn set_dragging(dragging: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_dragging(dragging: bool) -> Result<(), String> {
-    IS_DRAGGING.store(dragging, Ordering::SeqCst);
-    Ok(())
-}
-
-#[tauri::command]
 async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-    use tauri::window::WindowBuilder;
 
     let label = format!("toast-{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
