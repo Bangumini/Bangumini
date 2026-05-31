@@ -28,7 +28,9 @@ export async function tauriFetch(
     },
   });
 
-  return new Response(result.body, {
+  // 204 No Content and other null body statuses cannot have a body
+  const hasBody = result.status !== 204 && result.status !== 205 && result.status !== 304;
+  return new Response(hasBody ? result.body : null, {
     status: result.status,
     headers: { "Content-Type": "application/json" },
   });
