@@ -130,7 +130,7 @@ export default function SubjectDetailPage() {
         e.stopPropagation();
         import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
           openUrl(`https://bgm.tv/subject/${subjectId}`);
-        }).catch(err => console.error("Failed to open URL:", err));
+        });
         return;
       }
 
