@@ -124,18 +124,19 @@ export default function SubjectDetailPage() {
       const tag = (e.target as HTMLElement)?.tagName;
       const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 
+      // Ctrl+O: open in browser (handle early, before other checks)
+      if (e.key === "o" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.open(`https://bgm.tv/subject/${subjectId}`);
+        return;
+      }
+
       // Ctrl+K: command palette
       if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         setPaletteOpen((prev) => !prev);
         setPaletteIndex(0);
-        return;
-      }
-
-      // Ctrl+O: open in browser
-      if (e.key === "o" && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        window.open(`https://bgm.tv/subject/${subjectId}`);
         return;
       }
 
@@ -216,8 +217,8 @@ export default function SubjectDetailPage() {
         return;
       }
     }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true); // Use capture phase
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [paletteOpen, paletteIndex, totalEp, currentEp, targetEp, isDirty, handleBack, subject]);
 
   const staffMap = new Map<string, string[]>();
