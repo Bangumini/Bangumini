@@ -73,6 +73,8 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_KEY) === "1",
   );
+  const [filterPaletteOpen, setFilterPaletteOpen] = useState(false);
+  const [filterPaletteIndex, setFilterPaletteIndex] = useState(0);
 
   const isSearchPage = location.pathname === "/";
   const isCollections = location.pathname === "/collections";
@@ -112,33 +114,52 @@ export default function Layout() {
         return;
       }
 
-      // Ctrl/Cmd + P focuses the select dropdown and simulates Space to open it
+      // Ctrl/Cmd + P opens filter palette
       if (mod && e.key === "p") {
         e.preventDefault();
-        const select = document.querySelector("select") as HTMLSelectElement | null;
-        if (select) {
-          select.focus();
-          // Simulate Space key press to open the dropdown
-          setTimeout(() => {
-            const spaceDown = new KeyboardEvent("keydown", {
-              key: " ",
-              code: "Space",
-              keyCode: 32,
-              which: 32,
-              bubbles: true,
-              cancelable: true,
-            });
-            const spaceUp = new KeyboardEvent("keyup", {
-              key: " ",
-              code: "Space",
-              keyCode: 32,
-              which: 32,
-              bubbles: true,
-              cancelable: true,
-            });
-            select.dispatchEvent(spaceDown);
-            select.dispatchEvent(spaceUp);
-          }, 50);
+        setFilterPaletteOpen((prev) => !prev);
+        setFilterPaletteIndex(0);
+        return;
+      }
+
+      // Filter palette navigation
+      if (filterPaletteOpen) {
+        const options = isSearchPage ? SUBJECT_TYPES : isCollections ? COLLECTION_TYPES : isCalendar ? CALENDAR_WEEKDAYS : [];
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setFilterPaletteIndex((i) => Math.min(options.length - 1, i + 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setFilterPaletteIndex((i) => Math.max(0, i - 1));
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const opt = options[filterPaletteIndex];
+          if (opt) {
+            const params = new URLSearchParams(searchParams);
+            if (isSearchPage) {
+              if (opt.value) params.set("stype", opt.value);
+              else params.delete("stype");
+            } else if (isCollections) {
+              params.set("type", opt.value);
+              params.delete("filter");
+            } else if (isCalendar) {
+              if (opt.value) params.set("weekday", opt.value);
+              else params.delete("weekday");
+              params.delete("filter");
+            }
+            setSearchParams(params, { replace: true });
+            setFilterPaletteOpen(false);
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setFilterPaletteOpen(false);
+          return;
         }
         return;
       }
@@ -179,7 +200,7 @@ export default function Layout() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigate]);
+  }, [navigate, filterPaletteOpen, filterPaletteIndex, isSearchPage, isCollections, isCalendar, searchParams, setSearchParams]);
 
   // Persistent input: keep the page's search/filter box focused so the user can
   // type immediately on every page and after the window is re-summoned.
@@ -422,6 +443,66 @@ export default function Layout() {
           <KeyHint k="Tab" label="侧边栏" />
         </footer>
       </div>
+
+      {/* Filter Palette Overlay */}
+      {filterPaletteOpen && (() => {
+        const options = isSearchPage ? SUBJECT_TYPES : isCollections ? COLLECTION_TYPES : isCalendar ? CALENDAR_WEEKDAYS : [];
+        const currentValue = isSearchPage
+          ? searchParams.get("stype") ?? "2"
+          : isCollections
+            ? searchParams.get("type") ?? "3"
+            : searchParams.get("weekday") ?? "";
+        const title = isSearchPage ? "条目类型" : isCollections ? "收藏状态" : "星期筛选";
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setFilterPaletteOpen(false)} />
+            <div className="relative w-80 bg-elevated border border-line-strong rounded-card shadow-pop overflow-hidden">
+              <div className="px-3 py-2 text-[12px] text-fg-tertiary border-b border-line">
+                {title} · 按回车选择
+              </div>
+              <div className="p-1.5">
+                {options.map((opt, i) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => {
+                      const params = new URLSearchParams(searchParams);
+                      if (isSearchPage) {
+                        if (opt.value) params.set("stype", opt.value);
+                        else params.delete("stype");
+                      } else if (isCollections) {
+                        params.set("type", opt.value);
+                        params.delete("filter");
+                      } else if (isCalendar) {
+                        if (opt.value) params.set("weekday", opt.value);
+                        else params.delete("weekday");
+                        params.delete("filter");
+                      }
+                      setSearchParams(params, { replace: true });
+                      setFilterPaletteOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-[13px] text-left transition-colors ${
+                      i === filterPaletteIndex
+                        ? "bg-accent text-accent-fg"
+                        : opt.value === currentValue
+                          ? "bg-accent-soft text-accent"
+                          : "text-fg-secondary hover:bg-hover"
+                    }`}
+                  >
+                    <span>{opt.label}</span>
+                    {opt.value === currentValue && (
+                      <span className="ml-auto text-[11px] opacity-70">当前</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <div className="px-3 py-2 text-[12px] text-fg-tertiary border-t border-line">
+                ↑↓ 导航 · Enter 选择 · Esc 关闭
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
