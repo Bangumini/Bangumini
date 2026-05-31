@@ -107,6 +107,24 @@ export default function Layout() {
       const isSelect = target.tagName === "SELECT";
       const mod = e.metaKey || e.ctrlKey;
 
+      // Esc: clear input if has content, otherwise hide window
+      if (e.key === "Escape" && !mod && !e.altKey) {
+        e.preventDefault();
+        if (isInput && (target as HTMLInputElement).value) {
+          // Clear the input
+          (target as HTMLInputElement).value = "";
+          // Trigger change event to update search params
+          const event = new Event("input", { bubbles: true });
+          target.dispatchEvent(event);
+        } else {
+          // Hide window
+          import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+            getCurrentWindow().hide();
+          });
+        }
+        return;
+      }
+
       // Tab toggles the sidebar (prevent default tab behavior on input)
       if (e.key === "Tab" && !mod && !e.altKey) {
         e.preventDefault();
@@ -237,6 +255,15 @@ export default function Layout() {
               defaultValue={q}
               placeholder="搜索条目…"
               className="w-full pl-9 pr-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
+              onInput={(e) => {
+                // Handle programmatic clear from Esc key
+                const val = e.currentTarget.value.trim();
+                if (!val && q) {
+                  const params = new URLSearchParams(searchParams);
+                  params.delete("q");
+                  setSearchParams(params);
+                }
+              }}
               onKeyDown={(e) => {
                 if (e.key !== "Enter") return;
                 const val = e.currentTarget.value.trim();
@@ -288,7 +315,7 @@ export default function Layout() {
               defaultValue={filter}
               placeholder="筛选日历…"
               className="w-full pl-9 pr-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
-              onChange={(e) => {
+              onInput={(e) => {
                 const v = e.target.value;
                 const params = new URLSearchParams(searchParams);
                 if (v) params.set("filter", v);
@@ -333,7 +360,7 @@ export default function Layout() {
               defaultValue={filter}
               placeholder="筛选收藏…"
               className="w-full pl-9 pr-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
-              onChange={(e) => {
+              onInput={(e) => {
                 const v = e.target.value;
                 const params = new URLSearchParams(searchParams);
                 if (v) params.set("filter", v);

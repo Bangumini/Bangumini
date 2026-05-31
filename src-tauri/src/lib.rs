@@ -503,6 +503,7 @@ async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String
             background: transparent;
             font-family: "Inter", system-ui, -apple-system, sans-serif;
             -webkit-font-smoothing: antialiased;
+            overflow: hidden;
         }}
         .toast {{
             padding: 12px 20px;
@@ -513,6 +514,7 @@ async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String
             border-radius: 8px;
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
             animation: fade-in 0.2s ease-out;
+            border: none;
         }}
         @keyframes fade-in {{
             from {{ opacity: 0; transform: translateY(-8px); }}
@@ -547,7 +549,7 @@ async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String
     window.eval(&format!("document.write(`{}`);", html.replace('`', "\\`")))
         .map_err(|e| e.to_string())?;
 
-    // Center on screen
+    // Center on screen, lower position (70% down from top)
     if let Ok(monitor) = window.current_monitor() {
         if let Some(monitor) = monitor {
             let size = monitor.size();
@@ -556,7 +558,7 @@ async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String
             let screen_height = size.height as f64 / scale;
             let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
                 x: (screen_width - 200.0) / 2.0,
-                y: screen_height * 0.15,
+                y: screen_height * 0.7,
             }));
         }
     }
