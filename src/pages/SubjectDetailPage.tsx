@@ -126,10 +126,11 @@ export default function SubjectDetailPage() {
 
       // Ctrl+O: open in browser (handle early, before other checks)
       if (e.key === "o" && (e.ctrlKey || e.metaKey)) {
-        console.log("Ctrl+O detected in SubjectDetailPage");
         e.preventDefault();
         e.stopPropagation();
-        window.open(`https://bgm.tv/subject/${subjectId}`);
+        import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
+          openUrl(`https://bgm.tv/subject/${subjectId}`);
+        }).catch(err => console.error("Failed to open URL:", err));
         return;
       }
 
@@ -246,7 +247,10 @@ export default function SubjectDetailPage() {
         </span>
         {loading && <span className="text-[12px] text-fg-tertiary animate-pulse">保存中…</span>}
         <button
-          onClick={() => window.open(`https://bgm.tv/subject/${subjectId}`)}
+          onClick={async () => {
+            const { openUrl } = await import("@tauri-apps/plugin-opener");
+            openUrl(`https://bgm.tv/subject/${subjectId}`);
+          }}
           className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-fg-secondary hover:bg-hover hover:text-fg transition-colors"
         >
           Bangumi
