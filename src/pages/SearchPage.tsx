@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { searchSubjects } from "@shared/api/client";
 import { SubjectTypeLabel } from "@shared/api/types";
 import { SubjectRow, Rating, Meta } from "../components/SubjectRow";
@@ -22,7 +23,6 @@ export default function SearchPage() {
   const typeFilter = searchParams.get("stype") ?? "";
   const [focusedIndex, setFocusedIndex] = useState(0);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const [copyNotification, setCopyNotification] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["search", keyword, typeFilter],
@@ -59,12 +59,9 @@ export default function SearchPage() {
         if (s) {
           const name = s.name_cn || s.name;
           navigator.clipboard.writeText(name).then(async () => {
-            setCopyNotification(true);
-            setTimeout(() => setCopyNotification(false), 800);
-            setTimeout(async () => {
-              const { getCurrentWindow } = await import("@tauri-apps/api/window");
-              getCurrentWindow().hide();
-            }, 300);
+            const { getCurrentWindow } = await import("@tauri-apps/api/window");
+            await invoke("show_toast", { message: "已复制条目名" });
+            getCurrentWindow().hide();
           });
         }
         return;
@@ -103,14 +100,7 @@ export default function SearchPage() {
   if (subjects.length === 0) return <EmptyState>无结果</EmptyState>;
 
   return (
-    <div className="relative p-2.5 space-y-0.5">
-      {/* Copy notification */}
-      {copyNotification && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-success text-white text-[13px] font-medium rounded-md shadow-lg animate-fade-in">
-          已复制条目名
-        </div>
-      )}
-
+    <div className="p-2.5 space-y-0.5">
       {subjects.map((s, i) => (
         <SubjectRow
           key={s.id}

@@ -306,6 +306,7 @@ pub fn run() {
             register_shortcut,
             set_autostart,
             set_dragging,
+            show_toast,
             start_hotkey_recording,
             stop_hotkey_recording
         ])
@@ -474,6 +475,108 @@ fn set_autostart(enabled: bool) -> Result<(), String> {
 #[tauri::command]
 fn set_dragging(dragging: bool) -> Result<(), String> {
     IS_DRAGGING.store(dragging, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_dragging(dragging: bool) -> Result<(), String> {
+    IS_DRAGGING.store(dragging, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    use tauri::window::WindowBuilder;
+
+    let label = format!("toast-{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis());
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            font-family: "Inter", system-ui, -apple-system, sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }}
+        .toast {{
+            padding: 12px 20px;
+            background: #4ade80;
+            color: white;
+            font-size: 13px;
+            font-weight: 500;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+            animation: fade-in 0.2s ease-out;
+        }}
+        @keyframes fade-in {{
+            from {{ opacity: 0; transform: translateY(-8px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="toast">{}</div>
+</body>
+</html>"#,
+        message
+    );
+
+    let window = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("about:blank".into()))
+        .title("")
+        .inner_size(200.0, 50.0)
+        .position(0.0, 0.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .closable(false)
+        .decorations(false)
+        .transparent(true)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // Set HTML content
+    window.eval(&format!("document.write(`{}`);", html.replace('`', "\\`")))
+        .map_err(|e| e.to_string())?;
+
+    // Center on screen
+    if let Ok(monitor) = window.current_monitor() {
+        if let Some(monitor) = monitor {
+            let size = monitor.size();
+            let scale = monitor.scale_factor();
+            let screen_width = size.width as f64 / scale;
+            let screen_height = size.height as f64 / scale;
+            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                x: (screen_width - 200.0) / 2.0,
+                y: screen_height * 0.15,
+            }));
+        }
+    }
+
+    let _ = window.show();
+
+    // Auto-close after 1 second
+    let w = window.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        let _ = w.close();
+    });
+
     Ok(())
 }
 

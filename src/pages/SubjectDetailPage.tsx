@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import {
   getSubject,
   getSubjectPersons,
@@ -33,7 +34,6 @@ export default function SubjectDetailPage() {
   const [loading, setLoading] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
-  const [copyNotification, setCopyNotification] = useState(false);
   const initialEpStatus = useRef<number | null>(null);
   const leftColumnRef = useRef<HTMLDivElement>(null);
 
@@ -151,12 +151,9 @@ export default function SubjectDetailPage() {
           const name = subject?.name_cn || subject?.name || "";
           if (name) {
             navigator.clipboard.writeText(name).then(async () => {
-              setCopyNotification(true);
-              setTimeout(() => setCopyNotification(false), 800);
-              setTimeout(async () => {
-                const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                getCurrentWindow().hide();
-              }, 300);
+              const { getCurrentWindow } = await import("@tauri-apps/api/window");
+              await invoke("show_toast", { message: "已复制条目名" });
+              getCurrentWindow().hide();
             });
           }
           return;
@@ -253,14 +250,7 @@ export default function SubjectDetailPage() {
   });
 
   return (
-    <div className="relative h-screen flex flex-col text-fg bg-surface/90">
-      {/* Copy notification */}
-      {copyNotification && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-success text-white text-[13px] font-medium rounded-md shadow-lg animate-fade-in">
-          已复制条目名
-        </div>
-      )}
-
+    <div className="h-screen flex flex-col text-fg bg-surface/90">
       {/* Header */}
       <header className="flex items-center gap-2 h-12 px-3 border-b border-line shrink-0">
         <button
@@ -382,12 +372,47 @@ export default function SubjectDetailPage() {
                 </div>
                 {isDirty && <p className="text-[12px] text-fg-tertiary mt-1.5">按 Enter 提交 · ← → 调整</p>}
                 {!isDirty && totalEp > 0 && <p className="text-[12px] text-fg-tertiary mt-1.5">← → 调整进度</p>}
-                {(totalEp <= 0 || !isDirty) && <p className="text-[12px] text-fg-tertiary mt-1.5">↑ ↓ 滚动内容</p>}
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Footer hints */}
+      <footer className="flex items-center gap-4 h-9 px-4 border-t border-line shrink-0 bg-panel/40">
+        <span className="flex items-center gap-1.5 text-fg-tertiary">
+          <kbd className="inline-flex min-w-5 h-5 items-center justify-center px-1 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+            {MOD} K
+          </kbd>
+          <span className="text-[12px]">菜单</span>
+        </span>
+        <span className="flex items-center gap-1.5 text-fg-tertiary">
+          <kbd className="inline-flex min-w-5 h-5 items-center justify-center px-1 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+            {MOD} ↵
+          </kbd>
+          <span className="text-[12px]">复制名称</span>
+        </span>
+        <span className="flex items-center gap-1.5 text-fg-tertiary">
+          <kbd className="inline-flex min-w-5 h-5 items-center justify-center px-1 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+            {MOD} O
+          </kbd>
+          <span className="text-[12px]">浏览器打开</span>
+        </span>
+        {(totalEp <= 0 || !isDirty) && (
+          <span className="flex items-center gap-1.5 text-fg-tertiary">
+            <kbd className="inline-flex min-w-5 h-5 items-center justify-center px-1 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+              ↑↓
+            </kbd>
+            <span className="text-[12px]">滚动内容</span>
+          </span>
+        )}
+        <span className="flex items-center gap-1.5 text-fg-tertiary">
+          <kbd className="inline-flex min-w-5 h-5 items-center justify-center px-1 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
+            Esc
+          </kbd>
+          <span className="text-[12px]">返回</span>
+        </span>
+      </footer>
 
       {/* Command Palette Overlay */}
       {paletteOpen && (
@@ -424,28 +449,6 @@ export default function SubjectDetailPage() {
           </div>
         </div>
       )}
-
-      {/* Ctrl+K hint in bottom-right corner */}
-      <div className="fixed bottom-4 right-4 flex flex-col items-end gap-1.5 text-[12px] text-fg-tertiary pointer-events-none">
-        <div className="flex items-center gap-1.5">
-          <kbd className="inline-flex h-5 items-center px-1.5 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
-            {MOD} K
-          </kbd>
-          菜单
-        </div>
-        <div className="flex items-center gap-1.5">
-          <kbd className="inline-flex h-5 items-center px-1.5 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
-            {MOD} ↵
-          </kbd>
-          复制名称
-        </div>
-        <div className="flex items-center gap-1.5">
-          <kbd className="inline-flex h-5 items-center px-1.5 rounded bg-elevated border border-line text-[11px] font-medium text-fg-secondary">
-            {MOD} O
-          </kbd>
-          浏览器打开
-        </div>
-      </div>
     </div>
   );
 }
