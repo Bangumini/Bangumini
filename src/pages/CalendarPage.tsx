@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getCalendar } from "@shared/api/client";
+import type { CalendarItem } from "@shared/api/types";
+import { readCache, writeCache } from "@shared/local-cache";
 import { WEEKDAY_CN, getTodayBangumiWeekday } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import type { SubjectSmall } from "@shared/api/types";
@@ -21,9 +23,16 @@ export default function CalendarPage() {
   const filterWeekday = searchParams.get("weekday") ?? "";
   const isFiltering = filterText !== "" || filterWeekday !== "";
 
+  const seedCalendar = useMemo(() => readCache<CalendarItem[]>("calendar"), []);
+
   const { data: calendar, isLoading, error } = useQuery({
     queryKey: ["calendar"],
-    queryFn: getCalendar,
+    queryFn: async () => {
+      const data = await getCalendar();
+      writeCache("calendar", data);
+      return data;
+    },
+    placeholderData: seedCalendar ?? undefined,
     staleTime: 1000 * 60 * 60 * 24,
   });
 

@@ -3,6 +3,7 @@ import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getAllUserCollections, getCalendar, getEpisodes, getUserCollections } from "@shared/api/client";
+import type { CalendarItem, PagedResponse, UserCollection } from "@shared/api/types";
 import { getAiringAt } from "@shared/api/anilist";
 import { SubjectTypeLabel } from "@shared/api/types";
 import {
@@ -12,6 +13,7 @@ import {
   WEEKDAY_CN,
 } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
+import { readCache, writeCache, clearCache } from "@shared/local-cache";
 import { getUsername } from "../api/oauth";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 import { MOD } from "../api/shortcut";
@@ -90,7 +92,6 @@ export default function CollectionsPage() {
   const restoredPageState = useMemo(() => readPageState(collectionType, searchText), [collectionType, searchText]);
   const [page, setPage] = useState(restoredPageState.page);
   const [focusedIndex, setFocusedIndex] = useState(restoredPageState.focusedIndex);
-  const [refreshing, setRefreshing] = useState(false);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const isWatching = collectionType === "3";
   const today = getTodayBangumiWeekday();
@@ -101,6 +102,7 @@ export default function CollectionsPage() {
   useEffect(() => {
     const state = location.state as CollectionsLocationState | null;
     if (state?.fromSubject && state?.subjectId) {
+      clearCache(`collections-${collectionType}-${uname}`);
       queryClient.invalidateQueries({ queryKey: ["collections", collectionType, uname] });
       setPage(state.page ?? restoredPageState.page);
       setFocusedIndex(state.focusedIndex ?? restoredPageState.focusedIndex);
@@ -108,23 +110,40 @@ export default function CollectionsPage() {
     }
   }, [location, queryClient, collectionType, uname, restoredPageState.focusedIndex, restoredPageState.page]);
 
+  const seedCollections = useMemo(
+    () => readCache<PagedResponse<UserCollection>>(`collections-${collectionType}-${uname}`),
+    [collectionType, uname],
+  );
+
   const { data: collData, isLoading, error } = useQuery({
     queryKey: ["collections", collectionType, uname],
     queryFn: async () => {
       if (!uname) return { data: [], total: 0 };
+      let result;
       if (collectionType === "3") {
-        return getAllUserCollections({ username: uname, type: 3 });
+        result = await getAllUserCollections({ username: uname, type: 3 });
+      } else {
+        result = await getUserCollections({ username: uname, type: parseInt(collectionType), limit: 100 });
       }
-      return getUserCollections({ username: uname, type: parseInt(collectionType), limit: 100 });
+      writeCache(`collections-${collectionType}-${uname}`, result);
+      return result;
     },
     enabled: !!uname,
+    placeholderData: seedCollections ?? undefined,
     staleTime: 1000 * 60 * 60 * 24,
   });
 
+  const seedCalendar = useMemo(() => readCache<CalendarItem[]>("calendar"), []);
+
   const { data: calendar, error: calError } = useQuery({
     queryKey: ["calendar"],
-    queryFn: getCalendar,
+    queryFn: async () => {
+      const data = await getCalendar();
+      writeCache("calendar", data);
+      return data;
+    },
     enabled: isWatching,
+    placeholderData: seedCalendar ?? undefined,
     staleTime: 1000 * 60 * 60 * 24,
   });
 
@@ -140,6 +159,16 @@ export default function CollectionsPage() {
     }
     return ids;
   }, [calendar]);
+
+  const episodesCacheKey = `episodes-${airingIds.join(",")}`;
+  const seedEpisodes = useMemo(
+    () => {
+      const raw = readCache<[number, number][]>(episodesCacheKey);
+      if (!raw) return null;
+      return new Map<number, number>(raw);
+    },
+    [episodesCacheKey],
+  );
 
   const { data: episodeMap } = useQuery({
     queryKey: ["episodes", airingIds.join(",")],
@@ -158,9 +187,11 @@ export default function CollectionsPage() {
           map.set(id, airedCount);
         }
       }
+      writeCache(episodesCacheKey, [...map]);
       return map;
     },
     enabled: isWatching && airingIds.length > 0,
+    placeholderData: seedEpisodes ?? undefined,
     staleTime: 1000 * 60 * 60 * 24,
   });
 
@@ -281,7 +312,6 @@ export default function CollectionsPage() {
   }
 
   const clearAiringCache = async () => {
-    setRefreshing(true);
     for (let i = localStorage.length - 1; i >= 0; i -= 1) {
       const key = localStorage.key(i);
       if (key?.startsWith(AIRING_CACHE_PREFIX)) {
@@ -290,7 +320,6 @@ export default function CollectionsPage() {
     }
     queryClient.resetQueries({ queryKey: ["anilist-airing-times"] });
     await queryClient.refetchQueries({ queryKey: ["anilist-airing-times"] });
-    setRefreshing(false);
     invoke("show_toast", { message: "播出时间已刷新" });
   };
 
@@ -401,11 +430,6 @@ export default function CollectionsPage() {
         </div>
       </div>
 
-      {refreshing && (
-        <div className="shrink-0 h-0.5 bg-line overflow-hidden">
-          <div className="h-full w-full shimmer-bar" />
-        </div>
-      )}
     </div>
   );
 }

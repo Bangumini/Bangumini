@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Outlet, useNavigate, useLocation, useSearchParams } from "react-router-dom";
+import { useIsFetching } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -93,6 +94,7 @@ export default function Layout() {
   const isCollections = location.pathname === "/collections";
   const isCalendar = location.pathname === "/calendar";
   const isNextSeason = location.pathname === "/next-season";
+  const isFetching = useIsFetching() > 0;
   const currentTab = TABS.findIndex((t) => t.path === location.pathname);
   const currentTabRef = useRef(currentTab);
   currentTabRef.current = currentTab;
@@ -528,6 +530,12 @@ export default function Layout() {
         <main className="flex-1 overflow-auto">
           <Outlet />
         </main>
+
+        {isFetching && (
+          <div className="shrink-0 h-0.5 bg-line overflow-hidden">
+            <div className="h-full w-full shimmer-bar" />
+          </div>
+        )}
 
         <footer className="flex items-center gap-4 h-9 px-4 border-t border-line shrink-0 bg-panel/40">
           <KeyHint k="↵" label="打开" />
