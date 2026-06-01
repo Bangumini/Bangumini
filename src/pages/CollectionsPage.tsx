@@ -263,13 +263,15 @@ export default function CollectionsPage() {
     }
   }, [collectionType, focusedIndex, page, restoredPageState.focusedIndex, restoredPageState.page, searchText]);
 
+  const scrollKey = `${page}-${focusedIndex}-${paged.length}`;
+
   // Scroll focused item into view, centered
   useEffect(() => {
     const item = itemRefs.current[focusedIndex];
     if (item) {
       item.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-  }, [focusedIndex, paged]);
+  }, [scrollKey]);
 
   function openSubject(subjectId: number) {
     writePageState(collectionType, searchText, page, focusedIndex);
