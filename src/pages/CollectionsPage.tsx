@@ -3,6 +3,7 @@ import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getAllUserCollections, getCalendar, getEpisodes, getUserCollections } from "@shared/api/client";
+import { getAiringAt } from "@shared/api/anilist";
 import { SubjectTypeLabel } from "@shared/api/types";
 import {
   sortCollections,
@@ -16,6 +17,37 @@ import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 import { MOD } from "../api/shortcut";
 
 const LIMIT = 20;
+const AIRING_CACHE_PREFIX = "bangumini-anilist-";
+const AIRING_CACHE_TTL = 1000 * 60 * 60 * 24;
+const AIRING_REQUEST_DELAY = 700;
+
+type AiringTime = { airingAt: number; episode: number };
+type AiringCache = { title: string; value: AiringTime | null; cachedAt: number };
+
+function readAiringCache(subjectId: number, title: string): AiringCache | null {
+  try {
+    const raw = localStorage.getItem(`${AIRING_CACHE_PREFIX}${subjectId}`);
+    if (!raw) return null;
+    const cached = JSON.parse(raw) as AiringCache;
+    if (cached.title !== title) return null;
+    if (Date.now() - cached.cachedAt > AIRING_CACHE_TTL) return null;
+    if (cached.value && cached.value.airingAt * 1000 < Date.now()) return null;
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function writeAiringCache(subjectId: number, title: string, value: AiringTime | null) {
+  localStorage.setItem(
+    `${AIRING_CACHE_PREFIX}${subjectId}`,
+    JSON.stringify({ title, value, cachedAt: Date.now() } satisfies AiringCache),
+  );
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export default function CollectionsPage() {
   const navigate = useNavigate();
@@ -119,14 +151,52 @@ export default function CollectionsPage() {
     return rawCollections;
   }, [rawCollections, calendar, isWatching, today, airedEpMap]);
 
+  const airingTimeTargets = useMemo(() => {
+    if (!isWatching || airingMap.size === 0) return [];
+    return sorted
+      .filter((item) => airingMap.has(item.subject_id) && item.ep_status > 0)
+      .map((item) => ({
+        subjectId: item.subject_id,
+        title: item.subject.name,
+      }));
+  }, [sorted, airingMap, isWatching]);
+
+  const { data: airingTimeMap = new Map<number, AiringTime>() } = useQuery({
+    queryKey: ["anilist-airing-times", airingTimeTargets.map((item) => item.subjectId).join(",")],
+    queryFn: async () => {
+      const map = new Map<number, AiringTime>();
+      const missing: typeof airingTimeTargets = [];
+
+      for (const item of airingTimeTargets) {
+        const cached = readAiringCache(item.subjectId, item.title);
+        if (cached) {
+          if (cached.value) map.set(item.subjectId, cached.value);
+        } else {
+          missing.push(item);
+        }
+      }
+
+      for (const [index, item] of missing.entries()) {
+        if (index > 0) await delay(AIRING_REQUEST_DELAY);
+        const value = await getAiringAt(item.title);
+        writeAiringCache(item.subjectId, item.title, value);
+        if (value) map.set(item.subjectId, value);
+      }
+
+      return map;
+    },
+    enabled: isWatching && airingTimeTargets.length > 0,
+    staleTime: AIRING_CACHE_TTL,
+  });
+
   const totalPages = Math.max(1, Math.ceil(sorted.length / LIMIT));
   const displayLabelMap = useMemo(() => {
     const map = new Map<number, string | null>();
     for (const item of sorted) {
-      map.set(item.subject_id, getDisplayLabel(item, airingMap, airedEpMap, today));
+      map.set(item.subject_id, getDisplayLabel(item, airingMap, airedEpMap, today, airingTimeMap));
     }
     return map;
-  }, [sorted, airingMap, airedEpMap, today]);
+  }, [sorted, airingMap, airedEpMap, today, airingTimeMap]);
 
   const filtered = searchText
     ? sorted.filter((item) => {

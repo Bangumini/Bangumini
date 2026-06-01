@@ -1,20 +1,8 @@
-import type {
-  CalendarItem,
-  Episode,
-  PagedResponse,
-  RelatedCharacter,
-  RelatedPerson,
-  SearchResponse,
-  Subject,
-  User,
-  UserCollection,
-} from "./types";
+import type { CalendarItem, Episode, PagedResponse, RelatedCharacter, RelatedPerson, SearchResponse, Subject, User, UserCollection } from "./types";
 
 const BASE_URL = "https://api.bgm.tv";
 
 let tokenProvider: (() => Promise<string>) | null = null;
-
-// Detect if running in Tauri and use appropriate fetch
 let fetchFn: typeof fetch = fetch;
 
 export function setFetchFunction(fn: typeof fetch) {
@@ -54,10 +42,7 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Prom
   throw new Error("unreachable");
 }
 
-async function request<T>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const authHeaders = await getAuthHeaders();
   const headers = { ...authHeaders, ...(options.headers || {}) };
@@ -142,9 +127,7 @@ export async function getUserCollections(params: {
   if (params.offset) searchParams.set("offset", String(params.offset));
 
   const qs = searchParams.toString();
-  return request<PagedResponse<UserCollection>>(
-    `/v0/users/${uname}/collections${qs ? `?${qs}` : ""}`,
-  );
+  return request<PagedResponse<UserCollection>>(`/v0/users/${uname}/collections${qs ? `?${qs}` : ""}`);
 }
 
 /** POST /v0/users/-/collections/{subject_id} — 新增或修改收藏 */
@@ -166,34 +149,23 @@ export async function postUserCollection(
 }
 
 /** GET /v0/users/{username}/collections/{subject_id} — 获取单个条目收藏状态 */
-export async function getUserCollection(
-  username: string,
-  subjectId: number,
-): Promise<UserCollection> {
-  return request<UserCollection>(
-    `/v0/users/${username}/collections/${subjectId}`,
-  );
+export async function getUserCollection(username: string, subjectId: number): Promise<UserCollection> {
+  return request<UserCollection>(`/v0/users/${username}/collections/${subjectId}`);
 }
 
 /** GET /v0/subjects/{id}/persons — 获取条目关联人物 */
-export async function getSubjectPersons(
-  subjectId: number,
-): Promise<RelatedPerson[]> {
+export async function getSubjectPersons(subjectId: number): Promise<RelatedPerson[]> {
   return request<RelatedPerson[]>(`/v0/subjects/${subjectId}/persons`);
 }
 
 /** GET /v0/subjects/{id}/characters — 获取条目关联角色 */
-export async function getSubjectCharacters(
-  subjectId: number,
-): Promise<RelatedCharacter[]> {
+export async function getSubjectCharacters(subjectId: number): Promise<RelatedCharacter[]> {
   return request<RelatedCharacter[]>(`/v0/subjects/${subjectId}/characters`);
 }
 
 /** GET /v0/episodes — 获取条目剧集列表 */
 export async function getEpisodes(subjectId: number): Promise<PagedResponse<Episode>> {
-  return request<PagedResponse<Episode>>(
-    `/v0/episodes?subject_id=${subjectId}&limit=100`,
-  );
+  return request<PagedResponse<Episode>>(`/v0/episodes?subject_id=${subjectId}&limit=100`);
 }
 
 /** GET /v0/users/{username}/collections — 全量获取用户收藏（处理分页） */

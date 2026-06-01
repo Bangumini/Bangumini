@@ -4,7 +4,7 @@ import { StarIcon } from "./icons";
 /* Pill tag (e.g. watch-status / progress label) */
 export function Tag({ children }: { children: ReactNode }) {
   return (
-    <span className="shrink-0 text-[12px] leading-none px-1.5 py-1 rounded-md bg-accent-soft text-accent font-medium">
+    <span className="shrink-0 text-[14px] leading-none px-1.5 py-1 rounded-md bg-accent-soft text-accent font-medium">
       {children}
     </span>
   );
@@ -22,7 +22,7 @@ export function Rating({ score }: { score: number }) {
 
 /* Muted metadata text (type, weekday, rank…) */
 export function Meta({ children }: { children: ReactNode }) {
-  return <span className="shrink-0 text-[13px] text-fg-tertiary">{children}</span>;
+  return <span className="shrink-0 text-[14px] text-fg-tertiary">{children}</span>;
 }
 
 interface Props {

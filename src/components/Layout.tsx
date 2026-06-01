@@ -286,8 +286,8 @@ export default function Layout() {
             value={stype}
             onChange={(e) => {
               const params = new URLSearchParams(searchParams);
-              if (e.target.value) params.set("stype", e.target.value);
-              else params.delete("stype");
+                if (e.currentTarget.value) params.set("stype", e.currentTarget.value);
+                else params.delete("stype");
               setSearchParams(params, { replace: true });
             }}
             className={selectClass}
@@ -318,7 +318,7 @@ export default function Layout() {
               placeholder="筛选日历…"
               className="w-full pl-9 pr-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
               onInput={(e) => {
-                const v = e.target.value;
+                const v = e.currentTarget.value;
                 const params = new URLSearchParams(searchParams);
                 if (v) params.set("filter", v);
                 else params.delete("filter");
@@ -330,8 +330,8 @@ export default function Layout() {
             value={weekday}
             onChange={(e) => {
               const params = new URLSearchParams(searchParams);
-              if (e.target.value) params.set("weekday", e.target.value);
-              else params.delete("weekday");
+                if (e.currentTarget.value) params.set("weekday", e.currentTarget.value);
+                else params.delete("weekday");
               params.delete("filter");
               setSearchParams(params, { replace: true });
             }}
@@ -363,7 +363,7 @@ export default function Layout() {
               placeholder="筛选收藏…"
               className="w-full pl-9 pr-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
               onInput={(e) => {
-                const v = e.target.value;
+                const v = e.currentTarget.value;
                 const params = new URLSearchParams(searchParams);
                 if (v) params.set("filter", v);
                 else params.delete("filter");
@@ -375,7 +375,7 @@ export default function Layout() {
             value={type}
             onChange={(e) => {
               const params = new URLSearchParams(searchParams);
-              params.set("type", e.target.value);
+                params.set("type", e.currentTarget.value);
               params.delete("filter");
               setSearchParams(params, { replace: true });
             }}
