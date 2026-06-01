@@ -318,17 +318,15 @@ export default function NextSeasonPage() {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0">
-        {isFiltering ? (
+      {isFiltering && (
+        <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0">
           <span>
             筛选{filterText ? `"${filterText}"` : ""}
             {filterWeekday && ` · ${ANILIST_WEEKDAY_CN[parseInt(filterWeekday)]}`}
             {" "}· 共 {allFilteredItems.length} 条
           </span>
-        ) : (
-          <span>{seasonLabel}新番</span>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* List */}
       <div className="flex-1 overflow-y-auto p-2.5">

@@ -13,7 +13,7 @@ import {
   WEEKDAY_CN,
 } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
-import { readCache, writeCache, clearCache } from "@shared/local-cache";
+import { readCache, writeCache } from "@shared/local-cache";
 import { getUsername } from "../api/oauth";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 
@@ -101,8 +101,11 @@ export default function CollectionsPage() {
   useEffect(() => {
     const state = location.state as CollectionsLocationState | null;
     if (state?.fromSubject && state?.subjectId) {
-      clearCache(`collections-${collectionType}-${uname}`);
-      queryClient.invalidateQueries({ queryKey: ["collections", collectionType, uname] });
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key?.startsWith("bangumini-http-collections-")) localStorage.removeItem(key);
+      }
+      queryClient.invalidateQueries({ queryKey: ["collections"] });
       setPage(state.page ?? restoredPageState.page);
       setFocusedIndex(state.focusedIndex ?? restoredPageState.focusedIndex);
       window.history.replaceState({}, document.title);
