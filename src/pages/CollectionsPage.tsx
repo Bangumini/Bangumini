@@ -22,23 +22,55 @@ const AIRING_CACHE_TTL = 1000 * 60 * 60 * 24;
 const AIRING_REQUEST_DELAY = 700;
 
 type AiringTime = { airingAt: number; episode: number };
-type AiringCache = { title: string; value: AiringTime | null; cachedAt: number };
+type AiringCache = { title: string; value: AiringTime; cachedAt: number };
+type AiringTimeTarget = { subjectId: number; titles: string[] };
+type CollectionsLocationState = {
+  fromSubject?: boolean;
+  subjectId?: number;
+  page?: number;
+  focusedIndex?: number;
+};
 
-function readAiringCache(subjectId: number, title: string): AiringCache | null {
+function getPageStateKey(collectionType: string, searchText: string) {
+  return `bangumini-collections-page-${collectionType}-${searchText}`;
+}
+
+function readPageState(collectionType: string, searchText: string): { page: number; focusedIndex: number } {
+  try {
+    const raw = sessionStorage.getItem(getPageStateKey(collectionType, searchText));
+    if (!raw) return { page: 1, focusedIndex: 0 };
+    const state = JSON.parse(raw) as { page?: number; focusedIndex?: number };
+    return {
+      page: Math.max(1, state.page ?? 1),
+      focusedIndex: Math.max(0, state.focusedIndex ?? 0),
+    };
+  } catch {
+    return { page: 1, focusedIndex: 0 };
+  }
+}
+
+function writePageState(collectionType: string, searchText: string, page: number, focusedIndex: number) {
+  sessionStorage.setItem(
+    getPageStateKey(collectionType, searchText),
+    JSON.stringify({ page, focusedIndex }),
+  );
+}
+
+function readAiringCache(subjectId: number, titles: string[]): AiringCache | null {
   try {
     const raw = localStorage.getItem(`${AIRING_CACHE_PREFIX}${subjectId}`);
     if (!raw) return null;
     const cached = JSON.parse(raw) as AiringCache;
-    if (cached.title !== title) return null;
+    if (!titles.includes(cached.title)) return null;
     if (Date.now() - cached.cachedAt > AIRING_CACHE_TTL) return null;
-    if (cached.value && cached.value.airingAt * 1000 < Date.now()) return null;
+    if (cached.value.airingAt * 1000 < Date.now()) return null;
     return cached;
   } catch {
     return null;
   }
 }
 
-function writeAiringCache(subjectId: number, title: string, value: AiringTime | null) {
+function writeAiringCache(subjectId: number, title: string, value: AiringTime) {
   localStorage.setItem(
     `${AIRING_CACHE_PREFIX}${subjectId}`,
     JSON.stringify({ title, value, cachedAt: Date.now() } satisfies AiringCache),
@@ -57,8 +89,9 @@ export default function CollectionsPage() {
 
   const collectionType = searchParams.get("type") ?? "3";
   const searchText = searchParams.get("filter") ?? "";
-  const [page, setPage] = useState(1);
-  const [focusedIndex, setFocusedIndex] = useState(0);
+  const restoredPageState = useMemo(() => readPageState(collectionType, searchText), [collectionType, searchText]);
+  const [page, setPage] = useState(restoredPageState.page);
+  const [focusedIndex, setFocusedIndex] = useState(restoredPageState.focusedIndex);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const isWatching = collectionType === "3";
   const today = getTodayBangumiWeekday();
@@ -67,12 +100,14 @@ export default function CollectionsPage() {
 
   // Detect return from subject detail page and invalidate if ep_status changed
   useEffect(() => {
-    const state = location.state as { fromSubject?: boolean; subjectId?: number } | null;
+    const state = location.state as CollectionsLocationState | null;
     if (state?.fromSubject && state?.subjectId) {
       queryClient.invalidateQueries({ queryKey: ["collections", collectionType, uname] });
+      setPage(state.page ?? restoredPageState.page);
+      setFocusedIndex(state.focusedIndex ?? restoredPageState.focusedIndex);
       window.history.replaceState({}, document.title);
     }
-  }, [location, queryClient, collectionType, uname]);
+  }, [location, queryClient, collectionType, uname, restoredPageState.focusedIndex, restoredPageState.page]);
 
   const { data: collData, isLoading, error } = useQuery({
     queryKey: ["collections", collectionType, uname],
@@ -157,7 +192,7 @@ export default function CollectionsPage() {
       .filter((item) => airingMap.has(item.subject_id) && item.ep_status > 0)
       .map((item) => ({
         subjectId: item.subject_id,
-        title: item.subject.name,
+        titles: [item.subject.name, item.subject.name_cn].filter(Boolean),
       }));
   }, [sorted, airingMap, isWatching]);
 
@@ -168,9 +203,9 @@ export default function CollectionsPage() {
       const missing: typeof airingTimeTargets = [];
 
       for (const item of airingTimeTargets) {
-        const cached = readAiringCache(item.subjectId, item.title);
+        const cached = readAiringCache(item.subjectId, item.titles);
         if (cached) {
-          if (cached.value) map.set(item.subjectId, cached.value);
+          map.set(item.subjectId, cached.value);
         } else {
           missing.push(item);
         }
@@ -178,9 +213,11 @@ export default function CollectionsPage() {
 
       for (const [index, item] of missing.entries()) {
         if (index > 0) await delay(AIRING_REQUEST_DELAY);
-        const value = await getAiringAt(item.title);
-        writeAiringCache(item.subjectId, item.title, value);
-        if (value) map.set(item.subjectId, value);
+        const value = await getAiringAt(...item.titles);
+        if (value) {
+          writeAiringCache(item.subjectId, item.titles[0], value);
+          map.set(item.subjectId, value);
+        }
       }
 
       return map;
@@ -212,12 +249,21 @@ export default function CollectionsPage() {
 
   const paged = filtered.slice((page - 1) * LIMIT, page * LIMIT);
 
-  // Reset page and focus when filter/type changes
   useEffect(() => {
-    setPage(1);
-    setFocusedIndex(0);
+    const total = Math.max(1, Math.ceil(filtered.length / LIMIT));
+    setPage((p) => Math.min(p, total));
+  }, [filtered.length]);
+
+  useEffect(() => {
+    setFocusedIndex((i) => Math.min(i, Math.max(0, paged.length - 1)));
     itemRefs.current = [];
-  }, [searchText, collectionType]);
+  }, [paged.length, page]);
+
+  useEffect(() => {
+    if (page !== restoredPageState.page || focusedIndex !== restoredPageState.focusedIndex) {
+      writePageState(collectionType, searchText, page, focusedIndex);
+    }
+  }, [collectionType, focusedIndex, page, restoredPageState.focusedIndex, restoredPageState.page, searchText]);
 
   // Scroll focused item into view, centered
   useEffect(() => {
@@ -227,7 +273,13 @@ export default function CollectionsPage() {
     }
   }, [focusedIndex]);
 
-  // Keyboard navigation
+  function openSubject(subjectId: number) {
+    writePageState(collectionType, searchText, page, focusedIndex);
+    navigate(`/subject/${subjectId}`, {
+      state: { fromCollections: true, page, focusedIndex },
+    });
+  }
+
   // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -273,7 +325,7 @@ export default function CollectionsPage() {
         e.preventDefault();
         const item = paged[focusedIndex];
         if (item) {
-          navigate(`/subject/${item.subject.id}`, { state: { fromCollections: true } });
+          openSubject(item.subject.id);
         }
       }
     }
@@ -281,13 +333,34 @@ export default function CollectionsPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [paged.length, focusedIndex, page, totalPages, navigate, searchText]);
 
+  const clearAiringCache = async () => {
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(AIRING_CACHE_PREFIX)) {
+        localStorage.removeItem(key);
+      }
+    }
+    await queryClient.invalidateQueries({ queryKey: ["anilist-airing-times"] });
+  };
+
   return (
     <div className="h-full flex flex-col">
       {/* Page indicator */}
-      <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0">
-        {searchText
-          ? `搜索 · 共 ${filtered.length} 条`
-          : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条${totalPages > 1 ? ` · ${MOD}←→ 翻页` : ""}`}
+      <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0 flex items-center justify-between gap-2">
+        <span>
+          {searchText
+            ? `搜索 · 共 ${filtered.length} 条`
+            : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条${totalPages > 1 ? ` · ${MOD}←→ 翻页` : ""}`}
+        </span>
+        {isWatching && (
+          <button
+            type="button"
+            className="shrink-0 rounded px-1.5 py-0.5 text-[12px] text-fg-secondary hover:bg-bg-hover hover:text-fg-primary"
+            onClick={clearAiringCache}
+          >
+            刷新播出时间
+          </button>
+        )}
       </div>
 
       {/* Scrollable list */}
@@ -310,7 +383,7 @@ export default function CollectionsPage() {
                 title={s.name_cn || s.name}
                 subtitle={s.name_cn ? s.name : undefined}
                 selected={index === focusedIndex}
-                onClick={() => navigate(`/subject/${s.id}`, { state: { fromCollections: true } })}
+                onClick={() => openSubject(s.id)}
                 accessories={
                   <>
                     {label && <Tag>{label}</Tag>}

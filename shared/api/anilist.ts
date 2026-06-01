@@ -33,7 +33,7 @@ type AniListResponse = {
   errors?: unknown[];
 };
 
-export async function getAiringAt(title: string): Promise<{ airingAt: number; episode: number } | null> {
+async function searchAiringAt(title: string): Promise<{ airingAt: number; episode: number } | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
 
@@ -57,4 +57,16 @@ export async function getAiringAt(title: string): Promise<{ airingAt: number; ep
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function getAiringAt(...titles: string[]): Promise<{ airingAt: number; episode: number } | null> {
+  const tried = new Set<string>();
+  for (const title of titles) {
+    const trimmed = title.trim();
+    if (!trimmed || tried.has(trimmed)) continue;
+    tried.add(trimmed);
+    const result = await searchAiringAt(trimmed);
+    if (result) return result;
+  }
+  return null;
 }

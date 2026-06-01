@@ -110,11 +110,11 @@ export default function SubjectDetailPage() {
   }
 
   const handleBack = useCallback(() => {
-    const state = location.state as { fromCollections?: boolean } | null;
+    const state = location.state as { fromCollections?: boolean; page?: number; focusedIndex?: number } | null;
     const currentEpStatus = collection?.ep_status ?? 0;
     const hasChanged = initialEpStatus.current !== null && initialEpStatus.current !== currentEpStatus;
     if (state?.fromCollections && hasChanged) {
-      navigate("/collections", { state: { fromSubject: true, subjectId } });
+      navigate("/collections", { state: { fromSubject: true, subjectId, page: state.page, focusedIndex: state.focusedIndex } });
     } else {
       navigate(-1);
     }
