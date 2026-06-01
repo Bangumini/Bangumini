@@ -326,7 +326,7 @@ export default function NextSeasonPage() {
             {" "}· 共 {allFilteredItems.length} 条
           </span>
         ) : (
-          <span>← → 切换日期</span>
+          <span>{seasonLabel}新番</span>
         )}
       </div>
 

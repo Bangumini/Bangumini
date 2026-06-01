@@ -25,6 +25,13 @@ const COLLECTION_OPTIONS: { type: CollectionType; label: string; key: string }[]
   { type: 5, label: "抛弃", key: "5" },
 ];
 
+type ConfirmDialog = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+};
+
 export default function SubjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -34,6 +41,7 @@ export default function SubjectDetailPage() {
   const [loading, setLoading] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const initialEpStatus = useRef<number | null>(null);
   const leftColumnRef = useRef<HTMLDivElement>(null);
 
@@ -81,8 +89,49 @@ export default function SubjectDetailPage() {
   const displayTarget = targetEp ?? currentEp;
   const isDirty = targetEp !== null && targetEp !== currentEp;
 
+  function ensureWatching(): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!collection) {
+        setConfirmDialog({
+          title: "收藏并切换到「在看」？",
+          message: "更新观看进度需要先将条目以「在看」状态收藏",
+          confirmLabel: "收藏",
+          onConfirm: () => {
+            setConfirmDialog(null);
+            postUserCollection(subjectId, { type: 3 })
+              .then(() => refetchCollection())
+              .then(() => resolve(true))
+              .catch(() => resolve(false));
+          },
+        });
+        return;
+      }
+      const currentType = collection.type;
+      if (currentType !== 3) {
+        setConfirmDialog({
+          title: "切换到「在看」？",
+          message: `当前收藏状态为「${CollectionTypeLabel[currentType] || "其他"}」，需要切换到「在看」才能更新进度`,
+          confirmLabel: "切换",
+          onConfirm: () => {
+            setConfirmDialog(null);
+            postUserCollection(subjectId, { type: 3 })
+              .then(() => refetchCollection())
+              .then(() => resolve(true))
+              .catch(() => resolve(false));
+          },
+        });
+        return;
+      }
+      resolve(true);
+    });
+  }
+
   async function commitProgress() {
     if (!isDirty || targetEp === null) return;
+
+    const ok = await ensureWatching();
+    if (!ok) return;
+
     setLoading(true);
     try {
       const from = Math.min(currentEp, targetEp);
@@ -93,8 +142,25 @@ export default function SubjectDetailPage() {
       }
       await refetchCollection();
       setTargetEp(null);
+    } catch {
+      // If API says "need to add subject", retry with ensureWatching
+      setTargetEp(null);
     } finally {
       setLoading(false);
+    }
+
+    // After progress update, check if fully watched
+    if (targetEp >= totalEp && totalEp > 0) {
+      setConfirmDialog({
+        title: "标记为「看过」？",
+        message: `观看进度已达 ${totalEp} 集（总集数），是否标记为「看过」？`,
+        confirmLabel: "标记",
+        onConfirm: () => {
+          setConfirmDialog(null);
+          postUserCollection(subjectId, { type: 2 })
+            .then(() => refetchCollection());
+        },
+      });
     }
   }
 
@@ -133,6 +199,20 @@ export default function SubjectDetailPage() {
         import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
           openUrl(`https://bgm.tv/subject/${subjectId}`);
         });
+        return;
+      }
+
+      if (confirmDialog) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          confirmDialog.onConfirm();
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setConfirmDialog(null);
+          return;
+        }
         return;
       }
 
@@ -239,7 +319,7 @@ export default function SubjectDetailPage() {
     }
     window.addEventListener("keydown", handleKeyDown, true); // Use capture phase
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [paletteOpen, paletteIndex, totalEp, currentEp, targetEp, isDirty, handleBack, subject]);
+  }, [paletteOpen, paletteIndex, totalEp, currentEp, targetEp, isDirty, handleBack, subject, confirmDialog]);
 
   const staffMap = new Map<string, string[]>();
   (persons ?? []).forEach((p) => {
@@ -445,6 +525,35 @@ export default function SubjectDetailPage() {
             </div>
             <div className="px-3 py-2 text-[12px] text-fg-tertiary border-t border-line">
               ↑↓ 导航 · Enter/数字键 选择 · Esc 关闭
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Dialog */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[30vh]">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setConfirmDialog(null)} />
+          <div className="relative w-80 bg-elevated border border-line-strong rounded-card shadow-pop overflow-hidden">
+            <div className="px-4 py-3 text-[13px] font-semibold text-fg">
+              {confirmDialog.title}
+            </div>
+            <div className="px-4 pb-1 text-[13px] text-fg-secondary">
+              {confirmDialog.message}
+            </div>
+            <div className="flex gap-2 p-3 pt-3">
+              <button
+                onClick={() => setConfirmDialog(null)}
+                className="flex-1 px-3 py-2 text-[13px] bg-hover text-fg-secondary rounded-md hover:text-fg transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmDialog.onConfirm}
+                className="flex-1 px-3 py-2 text-[13px] font-medium bg-accent text-accent-fg rounded-md hover:opacity-90 transition-opacity"
+              >
+                {confirmDialog.confirmLabel}
+              </button>
             </div>
           </div>
         </div>
