@@ -8,12 +8,14 @@ import {
   BookmarkIcon,
   SettingsIcon,
   SidebarIcon,
+  StarIcon,
 } from "./icons";
 import { MOD } from "../api/shortcut";
 
 const TABS = [
   { path: "/collections", label: "收藏", key: "1", Icon: BookmarkIcon },
   { path: "/calendar", label: "日历", key: "2", Icon: CalendarIcon },
+  { path: "/next-season", label: "下季度", key: "5", Icon: StarIcon },
   { path: "/search", label: "搜索", key: "3", Icon: SearchIcon },
   { path: "/settings", label: "设置", key: "4", Icon: SettingsIcon },
 ] as const;
