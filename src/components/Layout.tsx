@@ -37,6 +37,17 @@ const SUBJECT_TYPES = [
   { value: "6", label: "三次元" },
 ];
 
+const NEXT_SEASON_WEEKDAYS = [
+  { value: "", label: "全部" },
+  { value: "0", label: "周日" },
+  { value: "1", label: "周一" },
+  { value: "2", label: "周二" },
+  { value: "3", label: "周三" },
+  { value: "4", label: "周四" },
+  { value: "5", label: "周五" },
+  { value: "6", label: "周六" },
+];
+
 const CALENDAR_WEEKDAYS = [
   { value: "", label: "全部" },
   { value: "1", label: "周一" },
@@ -147,7 +158,7 @@ export default function Layout() {
 
       // Filter palette navigation
       if (filterPaletteOpen) {
-        const options = isSearchPage ? SUBJECT_TYPES : isCollections ? COLLECTION_TYPES : isCalendar ? CALENDAR_WEEKDAYS : isNextSeason ? [] : [];
+        const options = isSearchPage ? SUBJECT_TYPES : isCollections ? COLLECTION_TYPES : isCalendar ? CALENDAR_WEEKDAYS : isNextSeason ? NEXT_SEASON_WEEKDAYS : [];
         if (e.key === "ArrowDown") {
           e.preventDefault();
           e.stopPropagation();
@@ -395,27 +406,46 @@ export default function Layout() {
 
     if (isNextSeason) {
       const filter = searchParams.get("filter") ?? "";
+      const weekday = searchParams.get("weekday") ?? "";
       return (
-        <div className="relative flex-1 max-w-md">
-          <SearchIcon
-            size={16}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-tertiary pointer-events-none"
-          />
-          <input
-            ref={inputRef}
-            key={location.pathname}
-            defaultValue={filter}
-            placeholder="筛选新番…"
-            className="w-full pl-9 pr-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
-            onInput={(e) => {
-              const v = e.currentTarget.value;
+        <>
+          <div className="relative flex-1 max-w-md">
+            <SearchIcon
+              size={16}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-tertiary pointer-events-none"
+            />
+            <input
+              ref={inputRef}
+              key={location.pathname}
+              defaultValue={filter}
+              placeholder="筛选新番…"
+              className="w-full pl-9 pr-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
+              onInput={(e) => {
+                const v = e.currentTarget.value;
+                const params = new URLSearchParams(searchParams);
+                if (v) params.set("filter", v);
+                else params.delete("filter");
+                setSearchParams(params, { replace: true });
+              }}
+            />
+          </div>
+          <select
+            value={weekday}
+            onChange={(e) => {
               const params = new URLSearchParams(searchParams);
-              if (v) params.set("filter", v);
-              else params.delete("filter");
+              if (e.currentTarget.value) params.set("weekday", e.currentTarget.value);
+              else params.delete("weekday");
+              params.delete("filter");
               setSearchParams(params, { replace: true });
             }}
-          />
-        </div>
+            className={selectClass}
+            style={{ backgroundImage: selectArrow }}
+          >
+            {NEXT_SEASON_WEEKDAYS.map((d) => (
+              <option key={d.value} value={d.value}>{d.label}</option>
+            ))}
+          </select>
+        </>
       );
     }
 
@@ -512,15 +542,15 @@ export default function Layout() {
 
       {/* Filter Palette Overlay */}
       {filterPaletteOpen && (() => {
-        const options = isSearchPage ? SUBJECT_TYPES : isCollections ? COLLECTION_TYPES : isCalendar ? CALENDAR_WEEKDAYS : isNextSeason ? [] : [];
+        const options = isSearchPage ? SUBJECT_TYPES : isCollections ? COLLECTION_TYPES : isCalendar ? CALENDAR_WEEKDAYS : isNextSeason ? NEXT_SEASON_WEEKDAYS : [];
         const currentValue = isSearchPage
           ? searchParams.get("stype") ?? "2"
           : isCollections
             ? searchParams.get("type") ?? "3"
-            : isCalendar
+            : isCalendar || isNextSeason
               ? searchParams.get("weekday") ?? ""
               : "";
-        const title = isSearchPage ? "条目类型" : isCollections ? "收藏状态" : isCalendar ? "星期筛选" : "";
+        const title = isSearchPage ? "条目类型" : isCollections ? "收藏状态" : isCalendar || isNextSeason ? "星期筛选" : "";
 
         return (
           <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
@@ -541,7 +571,7 @@ export default function Layout() {
                       } else if (isCollections) {
                         params.set("type", opt.value);
                         params.delete("filter");
-                      } else if (isCalendar) {
+                      } else if (isCalendar || isNextSeason) {
                         if (opt.value) params.set("weekday", opt.value);
                         else params.delete("weekday");
                         params.delete("filter");

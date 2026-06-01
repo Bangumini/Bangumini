@@ -65,11 +65,12 @@ export default function NextSeasonPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const filterText = searchParams.get("filter") ?? "";
+  const filterWeekday = searchParams.get("weekday") ?? "";
   const { label: seasonLabel } = getNextSeasonInfo();
   const [currentDay, setCurrentDay] = useState<number | "tba">(0);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const isFiltering = filterText !== "";
+  const isFiltering = filterText !== "" || filterWeekday !== "";
 
   const { data: entries = [], isLoading } = useQuery({
     queryKey: ["next-season"],
@@ -123,26 +124,50 @@ export default function NextSeasonPage() {
     setCurrentDay(earliestEntryDay(entries));
   }, [entries.length]);
 
-  // Filtered items (flat list across all days)
-  const filteredItems = useMemo(() => {
+  // Filtered items (grouped by weekday, TBA last)
+  const filteredGroups = useMemo(() => {
     if (!isFiltering) return [];
     const lower = filterText.toLowerCase();
-    return entries.filter((item) => {
-      const display = item.nameCn || item.title.native;
-      return (
-        display.toLowerCase().includes(lower) ||
-        item.title.native.toLowerCase().includes(lower) ||
-        item.title.romaji.toLowerCase().includes(lower)
-      );
+    let items = entries.filter((item) => {
+      if (filterWeekday && String(item.weekday ?? "tba") !== filterWeekday) return false;
+      if (filterText) {
+        const display = item.nameCn || item.title.native;
+        if (
+          !display.toLowerCase().includes(lower) &&
+          !item.title.native.toLowerCase().includes(lower) &&
+          !item.title.romaji.toLowerCase().includes(lower)
+        ) return false;
+      }
+      return true;
     });
-  }, [entries, filterText, isFiltering]);
+    // Group by weekday, TBA last
+    const map = new Map<number | "tba", SeasonEntry[]>();
+    const tbaItems: SeasonEntry[] = [];
+    for (const item of items) {
+      const key = item.weekday ?? "tba";
+      if (key === "tba") {
+        tbaItems.push(item);
+      } else {
+        if (!map.has(key)) map.set(key, []);
+        map.get(key)!.push(item);
+      }
+    }
+    const result: { weekday: number | "tba"; items: SeasonEntry[] }[] = [];
+    for (const d of [0, 1, 2, 3, 4, 5, 6]) {
+      const group = map.get(d);
+      if (group) result.push({ weekday: d, items: group });
+    }
+    if (tbaItems.length > 0) result.push({ weekday: "tba", items: tbaItems });
+    return result;
+  }, [entries, filterText, filterWeekday, isFiltering]);
 
-  const currentItems = isFiltering ? filteredItems : (groups.get(currentDay) ?? []);
+  const allFilteredItems = filteredGroups.flatMap((g) => g.items);
+  const currentItems = isFiltering ? allFilteredItems : (groups.get(currentDay) ?? []);
 
   // Reset focus when day or filter changes
   useEffect(() => {
     setFocusedIndex(0);
-  }, [currentDay, filterText]);
+  }, [currentDay, filterText, filterWeekday]);
 
   // Scroll focused item into view
   useEffect(() => {
@@ -151,21 +176,6 @@ export default function NextSeasonPage() {
       item.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [focusedIndex]);
-
-  // Day options for dropdown
-  const dayOptions = useMemo(() => {
-    const options: { label: string; value: string }[] = [];
-    for (const d of [0, 1, 2, 3, 4, 5, 6]) {
-      const count = (groups.get(d) ?? []).length;
-      if (count > 0) {
-        options.push({ label: `${ANILIST_WEEKDAY_CN[d]} · ${count}部`, value: String(d) });
-      }
-    }
-    if (hasTba) {
-      options.push({ label: `未定 · ${groups.get("tba")!.length}部`, value: "tba" });
-    }
-    return options;
-  }, [groups, hasTba]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -245,28 +255,15 @@ export default function NextSeasonPage() {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0 flex items-center gap-2">
+      <div className="px-4 py-1.5 text-[12px] text-fg-tertiary border-b border-line shrink-0">
         {isFiltering ? (
-          <span>筛选"{filterText}" · 共 {filteredItems.length} 条</span>
+          <span>
+            筛选{filterText ? `"${filterText}"` : ""}
+            {filterWeekday && ` · ${ANILIST_WEEKDAY_CN[parseInt(filterWeekday)]}`}
+            {" "}· 共 {allFilteredItems.length} 条
+          </span>
         ) : (
-          <>
-            <span>{seasonLabel}新番 · 共 {entries.length} 部</span>
-            <select
-              className="appearance-none bg-elevated border border-line rounded-md pl-2.5 pr-7 py-0.5 text-[12px] text-fg-secondary hover:text-fg focus:border-accent focus:outline-none"
-              style={{
-                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
-                backgroundRepeat: "no-repeat",
-                backgroundPosition: "right 0.5rem center",
-                backgroundSize: "12px",
-              }}
-              value={String(currentDay)}
-              onChange={(e) => setCurrentDay(e.target.value === "tba" ? "tba" : Number(e.target.value))}
-            >
-              {dayOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </>
+          <span>{seasonLabel}新番 · 共 {entries.length} 部 · ← → 切换日期</span>
         )}
       </div>
 
@@ -278,42 +275,96 @@ export default function NextSeasonPage() {
           <p className="text-[12px] text-fg-tertiary mb-2 px-1">播出日期未定</p>
         )}
 
-        <div className="space-y-0.5">
-          {currentItems.map((item, index) => {
-            const displayName = item.nameCn || item.title.native;
-            const dateStr = formatDate(item, seasonLabel);
-            const timeStr = item.airingAt
-              ? `${String(new Date(item.airingAt * 1000).getUTCHours()).padStart(2, "0")}:${String(new Date(item.airingAt * 1000).getUTCMinutes()).padStart(2, "0")}`
-              : "";
-            const subtitle = timeStr ? `${dateStr} ${timeStr}` : dateStr;
+        {isFiltering ? (
+          allFilteredItems.length === 0 ? (
+            <p className="text-[13px] text-fg-tertiary px-1">无匹配条目</p>
+          ) : (
+            (() => {
+              let flatIdx = 0;
+              return filteredGroups.map(({ weekday, items }) => (
+                <div key={weekday} className="mb-3">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-1 px-2.5">
+                    {weekday === "tba" ? "未定 (TBA)" : ANILIST_WEEKDAY_CN[weekday]}
+                    <span className="ml-2 normal-case font-normal">共 {items.length} 部</span>
+                  </h3>
+                  <div className="space-y-0.5">
+                    {items.map((item) => {
+                      const idx = flatIdx++;
+                      const displayName = item.nameCn || item.title.native;
+                      const dateStr = formatDate(item, seasonLabel);
+                      const timeStr = item.airingAt
+                        ? `${String(new Date(item.airingAt * 1000).getUTCHours()).padStart(2, "0")}:${String(new Date(item.airingAt * 1000).getUTCMinutes()).padStart(2, "0")}`
+                        : "";
+                      const subtitle = timeStr ? `${dateStr} ${timeStr}` : dateStr;
+                      return (
+                        <SubjectRow
+                          key={item.id}
+                          ref={(el) => { itemRefs.current[idx] = el; }}
+                          coverUrl={item.cover}
+                          title={displayName}
+                          subtitle={subtitle}
+                          selected={idx === focusedIndex}
+                          onClick={() => {
+                            if (item.bangumiId) {
+                              navigate(`/subject/${item.bangumiId}`);
+                            } else {
+                              import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
+                                openUrl(`https://anilist.co/anime/${item.id}`);
+                              });
+                            }
+                          }}
+                          accessories={
+                            <>
+                              {item.episodes && <Meta>{item.episodes}话</Meta>}
+                              <Meta>{item.format === "MOVIE" ? "剧场版" : item.format === "TV" ? "TV" : item.format}</Meta>
+                            </>
+                          }
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              ));
+            })()
+          )
+        ) : (
+          <div className="space-y-0.5">
+            {currentItems.map((item, index) => {
+              const displayName = item.nameCn || item.title.native;
+              const dateStr = formatDate(item, seasonLabel);
+              const timeStr = item.airingAt
+                ? `${String(new Date(item.airingAt * 1000).getUTCHours()).padStart(2, "0")}:${String(new Date(item.airingAt * 1000).getUTCMinutes()).padStart(2, "0")}`
+                : "";
+              const subtitle = timeStr ? `${dateStr} ${timeStr}` : dateStr;
 
-            return (
-              <SubjectRow
-                key={item.id}
-                ref={(el) => { itemRefs.current[index] = el; }}
-                coverUrl={item.cover}
-                title={displayName}
-                subtitle={subtitle}
-                selected={index === focusedIndex}
-                onClick={() => {
-                  if (item.bangumiId) {
-                    navigate(`/subject/${item.bangumiId}`);
-                  } else {
-                    import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
-                      openUrl(`https://anilist.co/anime/${item.id}`);
-                    });
+              return (
+                <SubjectRow
+                  key={item.id}
+                  ref={(el) => { itemRefs.current[index] = el; }}
+                  coverUrl={item.cover}
+                  title={displayName}
+                  subtitle={subtitle}
+                  selected={index === focusedIndex}
+                  onClick={() => {
+                    if (item.bangumiId) {
+                      navigate(`/subject/${item.bangumiId}`);
+                    } else {
+                      import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
+                        openUrl(`https://anilist.co/anime/${item.id}`);
+                      });
+                    }
+                  }}
+                  accessories={
+                    <>
+                      {item.episodes && <Meta>{item.episodes}话</Meta>}
+                      <Meta>{item.format === "MOVIE" ? "剧场版" : item.format === "TV" ? "TV" : item.format}</Meta>
+                    </>
                   }
-                }}
-                accessories={
-                  <>
-                    {item.episodes && <Meta>{item.episodes}话</Meta>}
-                    <Meta>{item.format === "MOVIE" ? "剧场版" : item.format === "TV" ? "TV" : item.format}</Meta>
-                  </>
-                }
-              />
-            );
-          })}
-        </div>
+                />
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
