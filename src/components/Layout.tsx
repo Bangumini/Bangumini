@@ -153,8 +153,17 @@ export default function Layout() {
       // Ctrl/Cmd + P opens filter palette
       if (mod && e.key === "p") {
         e.preventDefault();
+        const currentValue = isSearchPage
+          ? searchParams.get("stype") ?? "2"
+          : isCollections
+            ? searchParams.get("type") ?? "3"
+            : isCalendar || isNextSeason
+              ? searchParams.get("weekday") ?? ""
+              : "";
+        const filterOptions = isSearchPage ? SUBJECT_TYPES : isCollections ? COLLECTION_TYPES : isCalendar ? CALENDAR_WEEKDAYS : isNextSeason ? NEXT_SEASON_WEEKDAYS : [];
+        const idx = filterOptions.findIndex((o) => o.value === currentValue);
         setFilterPaletteOpen((prev) => !prev);
-        setFilterPaletteIndex(0);
+        setFilterPaletteIndex(idx >= 0 ? idx : 0);
         return;
       }
 
@@ -539,12 +548,12 @@ export default function Layout() {
 
         <footer className="flex items-center gap-4 h-9 px-4 border-t border-line shrink-0 bg-panel/40">
           <KeyHint k="↵" label="打开" />
-          <KeyHint k={`${MOD}↵`} label="复制名称" />
+          <KeyHint k={`${MOD}+↵`} label="复制名称" />
           <KeyHint k="↑↓" label="选择" />
-          <KeyHint k={`${MOD}←→`} label="翻页" />
-          <KeyHint k={`${MOD}↑↓`} label="切标签" />
+          <KeyHint k={`${MOD}+←→`} label="翻页" />
+          <KeyHint k={`${MOD}+↑↓`} label="切标签" />
           <KeyHint k="Tab" label="侧边栏" />
-          {isCollections && <KeyHint k={`${MOD}R`} label="刷新播出时间" />}
+          {isCollections && <KeyHint k={`${MOD}+R`} label="刷新播出时间" />}
         </footer>
       </div>
 

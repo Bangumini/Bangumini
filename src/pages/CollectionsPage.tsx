@@ -16,7 +16,6 @@ import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import { readCache, writeCache, clearCache } from "@shared/local-cache";
 import { getUsername } from "../api/oauth";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
-import { MOD } from "../api/shortcut";
 
 const LIMIT = 20;
 const AIRING_CACHE_PREFIX = "bangumini-anilist-";
@@ -391,7 +390,7 @@ export default function CollectionsPage() {
         <span>
           {searchText
             ? `搜索 · 共 ${filtered.length} 条`
-            : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条${totalPages > 1 ? ` · ${MOD}←→ 翻页` : ""}`}
+            : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条`}
         </span>
       </div>
 

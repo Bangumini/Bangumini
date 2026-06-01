@@ -139,7 +139,7 @@ export default function ShortcutRecorder({ className }: Props) {
       {error && <p className="text-[12px] text-danger mt-1.5">{error}</p>}
       {!error && (
         <p className="text-[12px] text-fg-tertiary mt-1.5">
-          点击后按下组合键录制；至少包含一个修饰键（Ctrl / Alt / Shift / Cmd）
+          点击后按下组合键录制
         </p>
       )}
     </div>

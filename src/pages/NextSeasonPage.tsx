@@ -326,7 +326,7 @@ export default function NextSeasonPage() {
             {" "}· 共 {allFilteredItems.length} 条
           </span>
         ) : (
-          <span>{seasonLabel}新番 · 共 {entries.length} 部 · ← → 切换日期</span>
+          <span>← → 切换日期</span>
         )}
       </div>
 
@@ -396,7 +396,9 @@ export default function NextSeasonPage() {
               <h2 className="text-[15px] font-semibold text-fg">
                 {currentDay === "tba" ? "未定 (TBA)" : ANILIST_WEEKDAY_CN[currentDay]}
               </h2>
-              <span className="text-[12px] text-fg-tertiary">← → 切换日期</span>
+              <span className="text-[12px] text-fg-tertiary">
+                {seasonLabel}新番 · 共 {entries.length} 部
+              </span>
             </div>
 
             {currentItems.length === 0 ? (
