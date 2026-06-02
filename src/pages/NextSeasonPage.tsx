@@ -127,7 +127,7 @@ export default function NextSeasonPage() {
     return readNextSeasonCache() ?? [];
   }, []);
 
-  const { data: entries = [], isLoading } = useQuery({
+  const { data: rawEntries, isLoading, error } = useQuery({
     queryKey: ["next-season", seasonLabel],
     queryFn: async () => {
       const items = await getNextSeason();
@@ -153,9 +153,12 @@ export default function NextSeasonPage() {
       writeNextSeasonCache(enriched);
       return enriched;
     },
-    placeholderData: seedCache.length > 0 ? seedCache : undefined,
+    initialData: seedCache.length > 0 ? seedCache : undefined,
+    initialDataUpdatedAt: 0,
     staleTime: NEXT_SEASON_CACHE_TTL,
   });
+
+  const entries = rawEntries ?? [];
 
   // Group by weekday
   const groups = useMemo(() => {
@@ -331,7 +334,9 @@ export default function NextSeasonPage() {
 
       {/* List */}
       <div className="flex-1 overflow-y-auto p-2.5">
-        {isLoading && <p className="text-fg-tertiary text-[13px] px-1">加载中…</p>}
+        {isLoading && !rawEntries && <p className="text-fg-tertiary text-[13px] px-1">加载中…</p>}
+        {error && !rawEntries && <p className="text-danger text-[13px] px-1 mb-2">加载出错: {String(error)}</p>}
+        {error && rawEntries && <p className="text-fg-tertiary text-[12px] px-1 mb-2">加载失败，显示缓存数据</p>}
 
         {!isLoading && !isFiltering && currentDay === "tba" && (
           <p className="text-[12px] text-fg-tertiary mb-2 px-1">播出日期未定</p>

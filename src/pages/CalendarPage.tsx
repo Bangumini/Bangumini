@@ -31,7 +31,8 @@ export default function CalendarPage() {
       writeCache("calendar", data);
       return data;
     },
-    placeholderData: seedCalendar ?? undefined,
+    initialData: seedCalendar ?? undefined,
+    initialDataUpdatedAt: 0,
     staleTime: 1000 * 60 * 60 * 24,
   });
 
@@ -145,13 +146,16 @@ export default function CalendarPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [today, currentDay, focusedIndex, navigate, displayItems.length, isFiltering]);
 
-  if (isLoading) return <p className="p-4 text-fg-tertiary text-[13px]">加载中…</p>;
-  if (error) return <p className="p-4 text-danger text-[13px]">加载出错: {String(error)}</p>;
+  if (isLoading && !calendar) return <p className="p-4 text-fg-tertiary text-[13px]">加载中…</p>;
+  if (error && !calendar) return <p className="p-4 text-danger text-[13px]">加载出错: {String(error)}</p>;
   if (!calendar || calendar.length === 0) return <p className="p-4 text-fg-tertiary text-[13px]">暂无放送数据</p>;
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto p-2.5">
+        {error && calendar && (
+          <p className="text-fg-tertiary text-[12px] mb-2 px-1">日历加载失败，显示缓存数据</p>
+        )}
         {isFiltering ? (
           <>
             {/* Filtering mode: flat list across all days */}

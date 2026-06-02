@@ -131,7 +131,8 @@ export default function CollectionsPage() {
       return result;
     },
     enabled: !!uname,
-    placeholderData: seedCollections ?? undefined,
+    initialData: seedCollections ?? undefined,
+    initialDataUpdatedAt: 0,
     staleTime: 1000 * 60 * 60 * 24,
   });
 
@@ -145,7 +146,8 @@ export default function CollectionsPage() {
       return data;
     },
     enabled: isWatching,
-    placeholderData: seedCalendar ?? undefined,
+    initialData: seedCalendar ?? undefined,
+    initialDataUpdatedAt: 0,
     staleTime: 1000 * 60 * 60 * 24,
   });
 
@@ -193,7 +195,8 @@ export default function CollectionsPage() {
       return map;
     },
     enabled: isWatching && airingIds.length > 0,
-    placeholderData: seedEpisodes ?? undefined,
+    initialData: seedEpisodes ?? undefined,
+    initialDataUpdatedAt: 0,
     staleTime: 1000 * 60 * 60 * 24,
   });
 
@@ -404,8 +407,10 @@ export default function CollectionsPage() {
 
       {/* Scrollable list */}
       <div className="flex-1 overflow-y-auto p-2.5">
-        {error && <p className="text-danger text-[13px] mb-2 px-1">收藏加载出错: {String(error)}</p>}
-        {calError && <p className="text-danger text-[13px] mb-2 px-1">日历加载出错: {String(calError)}</p>}
+        {error && !collData && <p className="text-danger text-[13px] mb-2 px-1">收藏加载出错: {String(error)}</p>}
+        {error && collData && <p className="text-fg-tertiary text-[12px] mb-2 px-1">收藏加载失败，显示缓存数据</p>}
+        {calError && !calendar && <p className="text-danger text-[13px] mb-2 px-1">日历加载出错: {String(calError)}</p>}
+        {calError && calendar && <p className="text-fg-tertiary text-[12px] mb-2 px-1">日历加载失败，显示缓存数据</p>}
         {isLoading && <p className="text-fg-tertiary text-[13px] px-1">加载中…</p>}
         {!uname && !isLoading && <p className="text-fg-tertiary text-[13px] px-1">正在获取用户信息…</p>}
 
