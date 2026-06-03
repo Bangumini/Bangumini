@@ -115,6 +115,11 @@ export default function SubjectDetailPage() {
   const displayTarget = targetEp ?? currentEp;
   const isDirty = targetEp !== null && targetEp !== currentEp;
 
+  const copyText = useCallback(async (text: string) => {
+    await navigator.clipboard.writeText(text);
+    await invoke("show_toast", { message: "已复制内容" });
+  }, []);
+
   function ensureWatching(): Promise<boolean> {
     return new Promise((resolve) => {
       if (!collection) {
@@ -383,7 +388,15 @@ export default function SubjectDetailPage() {
           {subject?.summary && (
             <section>
               <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">简介</h3>
-              <p className="text-[13px] text-fg-secondary leading-relaxed whitespace-pre-line">{subject.summary}</p>
+              <div className="text-[13px] text-fg-secondary leading-relaxed space-y-3">
+                {subject.summary.split(/\n\s*\n/).filter(Boolean).map((para, i) => (
+                  <p
+                    key={i}
+                    className="cursor-pointer hover:text-accent transition-colors whitespace-pre-line"
+                    onClick={() => copyText(para.trim())}
+                  >{para.trim()}</p>
+                ))}
+              </div>
             </section>
           )}
 
@@ -394,7 +407,17 @@ export default function SubjectDetailPage() {
                 {[...staffMap].map(([role, names]) => (
                   <div key={role} className="text-[13px] leading-relaxed">
                     <span className="text-fg-tertiary">{role}: </span>
-                    <span className="text-fg-secondary">{names.join(" / ")}</span>
+                    <span className="text-fg-secondary">
+                      {names.map((name, i) => (
+                        <span key={name}>
+                          {i > 0 && <span className="text-fg-tertiary/50"> / </span>}
+                          <span
+                            className="cursor-pointer hover:text-accent transition-colors"
+                            onClick={() => copyText(name)}
+                          >{name}</span>
+                        </span>
+                      ))}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -407,9 +430,23 @@ export default function SubjectDetailPage() {
               <div className="space-y-1.5">
                 {(characters ?? []).map((ch) => (
                   <div key={ch.id} className="text-[13px] leading-relaxed">
-                    <span className="text-fg">{ch.name}</span>
+                    <span
+                      className="text-fg cursor-pointer hover:text-accent transition-colors"
+                      onClick={() => copyText(ch.name)}
+                    >{ch.name}</span>
                     {ch.actors.length > 0 && (
-                      <span className="text-fg-tertiary"> CV: {ch.actors.map((a) => a.name).join(" / ")}</span>
+                      <span className="text-fg-tertiary">
+                        {" CV: "}
+                        {ch.actors.map((a, i) => (
+                          <span key={a.name}>
+                            {i > 0 && <span>/ </span>}
+                            <span
+                              className="cursor-pointer hover:text-accent transition-colors"
+                              onClick={() => copyText(a.name)}
+                            >{a.name}</span>
+                          </span>
+                        ))}
+                      </span>
                     )}
                   </div>
                 ))}
@@ -427,7 +464,13 @@ export default function SubjectDetailPage() {
           <div className="space-y-3 text-[13px]">
             <div className="flex items-baseline gap-2">
               <span className="text-fg-tertiary">评分</span>
-              <span className="text-star text-2xl font-semibold tabular-nums">
+              <span
+                className="text-star text-2xl font-semibold tabular-nums cursor-pointer hover:text-accent transition-colors"
+                onClick={() => {
+                  const score = subject?.rating?.score?.toFixed(1);
+                  if (score) copyText(score);
+                }}
+              >
                 {subject?.rating?.score?.toFixed(1) ?? "—"}
               </span>
               {subject?.rank ? <span className="text-fg-tertiary">#{subject.rank}</span> : null}
@@ -436,7 +479,10 @@ export default function SubjectDetailPage() {
             {subject?.date && (
               <div>
                 <span className="text-fg-tertiary">放送 </span>
-                <span className="text-fg-secondary">{subject.date}</span>
+                <span
+                  className="text-fg-secondary cursor-pointer hover:text-accent transition-colors"
+                  onClick={() => copyText(subject.date)}
+                >{subject.date}</span>
                 {subject.air_weekday ? (
                   <span className="text-fg-tertiary ml-1">
                     ({["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"][subject.air_weekday]})
