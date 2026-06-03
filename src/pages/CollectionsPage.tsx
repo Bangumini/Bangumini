@@ -89,11 +89,30 @@ export default function CollectionsPage() {
   const collectionType = searchParams.get("type") ?? "3";
   const searchText = searchParams.get("filter") ?? "";
   const restoredPageState = useMemo(() => readPageState(collectionType, searchText), [collectionType, searchText]);
-  const [page, setPage] = useState(restoredPageState.page);
-  const [focusedIndex, setFocusedIndex] = useState(restoredPageState.focusedIndex);
+
+  // Check if returning from detail page and use navigation state if available
+  const initialState = useMemo(() => {
+    const state = location.state as CollectionsLocationState | null;
+    if (state?.fromSubject && state?.subjectId) {
+      return {
+        page: state.page ?? restoredPageState.page,
+        focusedIndex: state.focusedIndex ?? restoredPageState.focusedIndex,
+        isReturningFromDetail: true,
+      };
+    }
+    return {
+      page: restoredPageState.page,
+      focusedIndex: restoredPageState.focusedIndex,
+      isReturningFromDetail: false,
+    };
+  }, [location.state, restoredPageState.page, restoredPageState.focusedIndex]);
+
+  const [page, setPage] = useState(initialState.page);
+  const [focusedIndex, setFocusedIndex] = useState(initialState.focusedIndex);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const isWatching = collectionType === "3";
   const today = getTodayBangumiWeekday();
+  const isReturningFromDetail = useRef(initialState.isReturningFromDetail);
 
   const uname = getUsername();
 
@@ -106,11 +125,11 @@ export default function CollectionsPage() {
         if (key?.startsWith("bangumini-http-collections-")) localStorage.removeItem(key);
       }
       queryClient.invalidateQueries({ queryKey: ["collections"] });
-      setPage(state.page ?? restoredPageState.page);
-      setFocusedIndex(state.focusedIndex ?? restoredPageState.focusedIndex);
       window.history.replaceState({}, document.title);
+      // Reset the flag after other effects have run
+      setTimeout(() => { isReturningFromDetail.current = false; }, 100);
     }
-  }, [location, queryClient, collectionType, uname, restoredPageState.focusedIndex, restoredPageState.page]);
+  }, [location, queryClient]);
 
   const seedCollections = useMemo(
     () => readCache<PagedResponse<UserCollection>>(`collections-${collectionType}-${uname}`),
@@ -287,15 +306,41 @@ export default function CollectionsPage() {
     setPage((p) => Math.min(p, total));
   }, [filtered.length]);
 
+  const prevTypeRef = useRef(collectionType);
+  const prevSearchRef = useRef(searchText);
+  const prevPageRef = useRef(page);
+
   useEffect(() => {
-    if (paged.length > 0) {
+    // Don't adjust when returning from detail page
+    if (isReturningFromDetail.current) {
+      prevPageRef.current = page;
+      return;
+    }
+
+    // If page changed, reset to first item
+    if (prevPageRef.current !== page) {
+      setFocusedIndex(0);
+      prevPageRef.current = page;
+    } else if (paged.length > 0) {
+      // If only paged.length changed (data updated on same page), adjust to valid range
       setFocusedIndex((i) => Math.min(i, paged.length - 1));
     }
   }, [paged.length, page]);
 
   useEffect(() => {
-    setPage(1);
-    setFocusedIndex(0);
+    // Don't reset when returning from detail page
+    if (isReturningFromDetail.current) {
+      prevTypeRef.current = collectionType;
+      prevSearchRef.current = searchText;
+      return;
+    }
+    // Only reset if type or search actually changed
+    if (prevTypeRef.current !== collectionType || prevSearchRef.current !== searchText) {
+      setPage(1);
+      setFocusedIndex(0);
+      prevTypeRef.current = collectionType;
+      prevSearchRef.current = searchText;
+    }
   }, [collectionType, searchText]);
 
   useEffect(() => {
