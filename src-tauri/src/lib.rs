@@ -296,7 +296,7 @@ pub fn run() {
         .plugin(prevent_default_plugin())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec![]),
+            Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
@@ -332,6 +332,16 @@ pub fn run() {
 
             // Register updater plugin
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+
+            // Refresh existing auto-start entries so they include the startup marker.
+            // Older entries may have been registered without arguments.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let autostart = app.autolaunch();
+                if autostart.is_enabled().unwrap_or(false) {
+                    let _ = autostart.enable();
+                }
+            }
 
             // Only show window on manual launch, not on auto-start
             let is_autostart = std::env::args().any(|arg| arg == "--autostart");
@@ -653,4 +663,3 @@ fn stop_hotkey_recording(app: tauri::AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
-
