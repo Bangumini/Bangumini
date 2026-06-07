@@ -225,6 +225,15 @@ export default function SubjectDetailPage() {
     await invoke("show_toast", { message: "已复制内容" });
   }, []);
 
+  async function showSaveFailedToast(message = "保存失败，请检查网络后重试") {
+    await invoke("show_toast", {
+      message,
+      variant: "error",
+      width: 360,
+      durationMs: 2200,
+    }).catch(() => {});
+  }
+
   function ensureWatching(): Promise<boolean> {
     return new Promise((resolve) => {
       if (!collection) {
@@ -237,7 +246,10 @@ export default function SubjectDetailPage() {
             postUserCollection(subjectId, { type: 3 })
               .then(() => refetchCollection())
               .then(() => resolve(true))
-              .catch(() => resolve(false));
+              .catch(() => {
+                void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
+                resolve(false);
+              });
           },
         });
         return;
@@ -253,7 +265,10 @@ export default function SubjectDetailPage() {
             postUserCollection(subjectId, { type: 3 })
               .then(() => refetchCollection())
               .then(() => resolve(true))
-              .catch(() => resolve(false));
+              .catch(() => {
+                void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
+                resolve(false);
+              });
           },
         });
         return;
@@ -269,6 +284,7 @@ export default function SubjectDetailPage() {
     if (!ok) return;
 
     setLoading(true);
+    let saved = false;
     try {
       const from = Math.min(currentEp, targetEp);
       const to = Math.max(currentEp, targetEp);
@@ -279,12 +295,14 @@ export default function SubjectDetailPage() {
       await refetchCollection();
       syncCollectionsCache(queryClient, subjectId);
       setTargetEp(null);
+      saved = true;
     } catch {
-      // If API says "need to add subject", retry with ensureWatching
-      setTargetEp(null);
+      await showSaveFailedToast("进度保存失败，请检查网络后重试");
     } finally {
       setLoading(false);
     }
+
+    if (!saved) return;
 
     // After progress update, check if fully watched
     if (targetEp >= totalEp && totalEp > 0) {
@@ -297,6 +315,9 @@ export default function SubjectDetailPage() {
           postUserCollection(subjectId, { type: 2 })
             .then(() => {
               refetchCollection().then(() => syncCollectionsCache(queryClient, subjectId));
+            })
+            .catch(() => {
+              void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
             });
         },
       });
@@ -309,6 +330,8 @@ export default function SubjectDetailPage() {
     try {
       await postUserCollection(subjectId, { type });
       refetchCollection().then(() => syncCollectionsCache(queryClient, subjectId));
+    } catch {
+      await showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
     } finally {
       setLoading(false);
     }

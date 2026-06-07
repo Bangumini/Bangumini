@@ -623,8 +623,22 @@ fn set_dragging(dragging: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String> {
+async fn show_toast(
+    app: tauri::AppHandle,
+    message: String,
+    variant: Option<String>,
+    width: Option<f64>,
+    duration_ms: Option<u64>,
+) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    let toast_width = width.unwrap_or(200.0).clamp(160.0, 520.0);
+    let toast_height = 50.0;
+    let duration = duration_ms.unwrap_or(1000).clamp(800, 5000);
+    let background = match variant.as_deref() {
+        Some("error") => "#ef4444",
+        _ => "#4ade80",
+    };
 
     let label = format!("toast-{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -651,13 +665,18 @@ async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String
         }}
         .toast {{
             padding: 12px 20px;
-            background: #4ade80;
+            width: {toast_width}px;
+            background: {background};
             color: white;
             font-size: 13px;
             font-weight: 500;
             border-radius: 8px;
             animation: fade-in 0.2s ease-out;
             border: none;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }}
         @keyframes fade-in {{
             from {{ opacity: 0; transform: translateY(-8px); }}
@@ -674,7 +693,7 @@ async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String
 
     let window = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("about:blank".into()))
         .title("")
-        .inner_size(200.0, 50.0)
+        .inner_size(toast_width, toast_height)
         .position(0.0, 0.0)
         .resizable(false)
         .maximizable(false)
@@ -701,7 +720,7 @@ async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String
             let screen_width = size.width as f64 / scale;
             let screen_height = size.height as f64 / scale;
             let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                x: (screen_width - 200.0) / 2.0,
+                x: (screen_width - toast_width) / 2.0,
                 y: screen_height * 0.7,
             }));
         }
@@ -709,10 +728,10 @@ async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String
 
     let _ = window.show();
 
-    // Auto-close after 1 second
+    // Auto-close after the configured duration.
     let w = window.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(duration)).await;
         let _ = w.close();
     });
 
