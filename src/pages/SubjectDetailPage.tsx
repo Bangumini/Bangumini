@@ -27,6 +27,7 @@ import {
   writeCachedPersons,
   writeCachedSubject,
 } from "@shared/storage/sqlite-cache";
+import CachedImage from "../components/CachedImage";
 
 function isNotFoundError(error: unknown) {
   return error instanceof Error && error.message.includes("Bangumi API error 404");
@@ -546,7 +547,12 @@ export default function SubjectDetailPage() {
         {/* Right column: fixed info panel */}
         <div className="w-72 shrink-0 border-l border-line p-5 flex flex-col gap-4 overflow-y-auto bg-panel/40">
           {subject?.images?.large && (
-            <img src={subject.images.large} alt="" className="w-full rounded-card border border-line" />
+            <CachedImage
+              src={subject.images.large}
+              alt=""
+              loading="eager"
+              className="w-full rounded-card border border-line"
+            />
           )}
 
           <div className="space-y-3 text-[13px]">

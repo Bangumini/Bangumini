@@ -14,6 +14,17 @@ type PayloadRow = {
   payload_json: string;
 };
 
+type ImageCacheRow = {
+  local_path: string;
+  updated_at: number;
+};
+
+export type CachedImageRecord = {
+  remoteUrl: string;
+  localPath: string;
+  updatedAt: number;
+};
+
 let dbPromise: Promise<Database> | null = null;
 
 async function initializeSchema(db: Database) {
@@ -49,6 +60,14 @@ async function initializeSchema(db: Database) {
     CREATE TABLE IF NOT EXISTS cache_entries (
       cache_key TEXT PRIMARY KEY,
       payload_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS image_cache (
+      remote_url TEXT PRIMARY KEY,
+      local_path TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     )
   `);
@@ -257,6 +276,36 @@ export async function deleteCachedValuesByPrefixExcept(cacheKeyPrefix: string, k
     await db.execute(
       "DELETE FROM cache_entries WHERE cache_key LIKE $1 AND cache_key != $2",
       [`${cacheKeyPrefix}%`, keepCacheKey],
+    );
+  }, undefined);
+}
+
+export async function readCachedImage(remoteUrl: string): Promise<CachedImageRecord | null> {
+  if (!remoteUrl) return null;
+  return withDatabase(async (db) => {
+    const rows = await db.select<ImageCacheRow[]>(
+      "SELECT local_path, updated_at FROM image_cache WHERE remote_url = $1 LIMIT 1",
+      [remoteUrl],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      remoteUrl,
+      localPath: row.local_path,
+      updatedAt: row.updated_at,
+    };
+  }, null);
+}
+
+export async function writeCachedImage(record: CachedImageRecord) {
+  await withDatabase(async (db) => {
+    await db.execute(
+      `INSERT INTO image_cache (remote_url, local_path, updated_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT(remote_url) DO UPDATE SET
+         local_path = excluded.local_path,
+         updated_at = excluded.updated_at`,
+      [record.remoteUrl, record.localPath, record.updatedAt],
     );
   }, undefined);
 }

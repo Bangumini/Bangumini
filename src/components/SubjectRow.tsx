@@ -1,4 +1,5 @@
 import { forwardRef, type ReactNode } from "react";
+import CachedImage from "./CachedImage";
 import { StarIcon } from "./icons";
 
 /* Pill tag (e.g. watch-status / progress label) */
@@ -51,7 +52,7 @@ export const SubjectRow = forwardRef<HTMLDivElement, Props>(function SubjectRow(
       }`}
     >
       {coverUrl ? (
-        <img
+        <CachedImage
           src={coverUrl}
           alt=""
           loading="lazy"

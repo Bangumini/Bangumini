@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -162,6 +164,102 @@ struct OAuthState {
     listener: Option<TcpListener>,
 }
 
+#[derive(serde::Serialize)]
+struct CacheImageResult {
+    local_path: String,
+}
+
+fn hash_url(value: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn extension_from_url(remote_url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(remote_url).ok()?;
+    let segment = url.path_segments()?.next_back()?;
+    let ext = segment.rsplit_once('.')?.1.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" | "png" | "webp" | "gif" | "avif" | "bmp" | "svg" => Some(ext),
+        _ => None,
+    }
+}
+
+fn extension_from_content_type(content_type: Option<&str>) -> Option<&'static str> {
+    let value = content_type?.split(';').next()?.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "image/jpeg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        "image/avif" => Some("avif"),
+        "image/bmp" => Some("bmp"),
+        "image/svg+xml" => Some("svg"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+async fn cache_image(app: tauri::AppHandle, remote_url: String) -> Result<CacheImageResult, String> {
+    let url = reqwest::Url::parse(&remote_url).map_err(|e| e.to_string())?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err("Only HTTP(S) image URLs can be cached".into());
+    }
+
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("covers");
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let url_ext = extension_from_url(&remote_url);
+    if let Some(ext) = &url_ext {
+        let candidate = cache_dir.join(format!("{:016x}.{}", hash_url(&remote_url), ext));
+        if candidate.exists() {
+            return Ok(CacheImageResult {
+                local_path: candidate.to_string_lossy().into_owned(),
+            });
+        }
+    }
+
+    let response = reqwest::Client::new()
+        .get(url)
+        .header("User-Agent", "Bangumini/1.0")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("Image request failed: {}", response.status()));
+    }
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("Image is too large to cache".into());
+    }
+
+    let ext = extension_from_content_type(content_type.as_deref())
+        .map(str::to_string)
+        .or(url_ext)
+        .unwrap_or_else(|| "img".to_string());
+    let local_path = cache_dir.join(format!("{:016x}.{}", hash_url(&remote_url), ext));
+    tokio::fs::write(&local_path, &bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(CacheImageResult {
+        local_path: local_path.to_string_lossy().into_owned(),
+    })
+}
+
 #[tauri::command]
 async fn start_oauth(app: tauri::AppHandle) -> Result<AuthUrlResult, String> {
     let state: String = format!("{:x}", std::time::SystemTime::now()
@@ -310,6 +408,7 @@ pub fn run() {
             get_autostart,
             set_dragging,
             show_toast,
+            cache_image,
             start_hotkey_recording,
             stop_hotkey_recording
         ])
