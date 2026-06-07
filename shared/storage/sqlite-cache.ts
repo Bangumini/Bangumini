@@ -33,6 +33,67 @@ export type CachedImageRecord = {
 
 let dbPromise: Promise<Database> | null = null;
 
+const PLACEHOLDER_IMAGE_RE =
+  /(^|[/_.-])(?:no[_\s-]?image|noimage|placeholder)([/_.-]|$)|[/_.-]default\.(?:jpg|jpeg|png|webp)(?:[?#]|$)/i;
+
+export function isUsefulImageUrl(url?: string | null): boolean {
+  if (!url) return false;
+  const normalized = (() => {
+    try {
+      return decodeURIComponent(url);
+    } catch {
+      return url;
+    }
+  })();
+  return !PLACEHOLDER_IMAGE_RE.test(normalized);
+}
+
+export function getPreferredSubjectCoverUrl(subject: Subject | SubjectSmall | null | undefined) {
+  const images = subject?.images;
+  if (!images) return null;
+  return (
+    [images.small, images.common, images.medium, images.large, images.grid].find(isUsefulImageUrl) ??
+    null
+  );
+}
+
+function mergeImageUrl(current: string, incoming: string): string {
+  if (isUsefulImageUrl(incoming)) return incoming;
+  if (isUsefulImageUrl(current)) return current;
+  return incoming || current;
+}
+
+function mergeSubjectImages(current: Subject["images"], incoming: Subject["images"]) {
+  return {
+    large: mergeImageUrl(current?.large, incoming?.large),
+    common: mergeImageUrl(current?.common, incoming?.common),
+    medium: mergeImageUrl(current?.medium, incoming?.medium),
+    small: mergeImageUrl(current?.small, incoming?.small),
+    grid: mergeImageUrl(current?.grid, incoming?.grid),
+  };
+}
+
+function mergeSubjectPreview(current: Subject | null, incoming: Subject): Subject {
+  if (!current) return incoming;
+
+  return {
+    ...current,
+    id: incoming.id,
+    name: incoming.name || current.name,
+    name_cn: incoming.name_cn || current.name_cn,
+    type: incoming.type || current.type,
+    images: mergeSubjectImages(current.images, incoming.images),
+    summary: incoming.summary || current.summary,
+    eps: incoming.eps || current.eps,
+    total_episodes: incoming.total_episodes || current.total_episodes,
+    rating: incoming.rating?.total ? incoming.rating : current.rating,
+    rank: incoming.rank || current.rank,
+    date: incoming.date || current.date,
+    air_weekday: incoming.air_weekday ?? current.air_weekday,
+    tags: current.tags ?? incoming.tags,
+  };
+}
+
 async function initializeSchema(db: Database) {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS subjects (
@@ -195,6 +256,11 @@ export async function readCachedSubject(subjectId: number): Promise<Subject | nu
 }
 
 export async function writeCachedSubject(subject: Subject) {
+  const current = await readCachedSubject(subject.id);
+  const payload = current
+    ? { ...subject, images: mergeSubjectImages(current.images, subject.images) }
+    : subject;
+
   await withDatabase(async (db) => {
     await db.execute(
       `INSERT INTO subjects (id, payload_json, updated_at)
@@ -202,17 +268,21 @@ export async function writeCachedSubject(subject: Subject) {
        ON CONFLICT(id) DO UPDATE SET
          payload_json = excluded.payload_json,
          updated_at = excluded.updated_at`,
-      [subject.id, JSON.stringify(subject), Date.now()],
+      [payload.id, JSON.stringify(payload), Date.now()],
     );
   }, undefined);
 }
 
 export async function writeCachedSubjectPreview(subject: Subject | SubjectSmall) {
+  const incoming = "air_date" in subject ? subjectFromSmall(subject) : subject;
+  const current = await readCachedSubject(incoming.id);
+  const merged = mergeSubjectPreview(current, incoming);
+
   if ("air_date" in subject) {
-    await writeCachedSubject(subjectFromSmall(subject));
+    await writeCachedSubject(merged);
     return;
   }
-  await writeCachedSubject(subject);
+  await writeCachedSubject(merged);
 }
 
 export async function writeCachedSubjectPreviews(subjects: Array<Subject | SubjectSmall>) {

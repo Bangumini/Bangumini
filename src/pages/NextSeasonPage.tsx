@@ -8,6 +8,9 @@ import { searchAnimeSubject } from "@shared/api/client";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
   deleteCachedValuesByPrefixExcept,
+  getPreferredSubjectCoverUrl,
+  isUsefulImageUrl,
+  readCachedSubject,
   readCachedValueWithLegacy,
   writeCachedValue,
 } from "@shared/storage/sqlite-cache";
@@ -84,6 +87,25 @@ function isAired(item: SeasonEntry): boolean {
   return false;
 }
 
+async function applyCachedSubjectCovers(entries: SeasonEntry[]) {
+  let changed = false;
+  const resolved = await Promise.all(
+    entries.map(async (entry) => {
+      if (!entry.bangumiId) return entry;
+      const subject = await readCachedSubject(entry.bangumiId);
+      const cachedCover = getPreferredSubjectCoverUrl(subject);
+      if (!cachedCover) return entry;
+
+      if (!isUsefulImageUrl(entry.cover) || entry.cover !== cachedCover) {
+        changed = true;
+        return { ...entry, cover: cachedCover };
+      }
+      return entry;
+    }),
+  );
+  return { entries: resolved, changed };
+}
+
 function earliestEntryDay(entries: SeasonEntry[]): number | "tba" {
   let earliestDay: number | "tba" = "tba";
   let earliestDate: Date | null = null;
@@ -127,8 +149,10 @@ export default function NextSeasonPage() {
         nextSeasonCacheKey,
         readLegacyNextSeasonCache,
       );
+      const resolved = cached ? await applyCachedSubjectCovers(cached) : null;
+      if (resolved?.changed) await writeCachedValue(nextSeasonCacheKey, resolved.entries);
       if (!cancelled && cached && !queryClient.getQueryData(["next-season", seasonLabel])) {
-        queryClient.setQueryData(["next-season", seasonLabel], cached);
+        queryClient.setQueryData(["next-season", seasonLabel], resolved?.entries ?? cached);
       }
     }
 
@@ -162,8 +186,9 @@ export default function NextSeasonPage() {
         .map((r) => r.value)
         .filter((e) => !isAired(e));
 
-      await writeCachedValue(nextSeasonCacheKey, enriched);
-      return enriched;
+      const resolved = await applyCachedSubjectCovers(enriched);
+      await writeCachedValue(nextSeasonCacheKey, resolved.entries);
+      return resolved.entries;
     },
     staleTime: NEXT_SEASON_CACHE_TTL,
   });
@@ -379,6 +404,7 @@ export default function NextSeasonPage() {
                         <SubjectRow
                           key={item.id}
                           ref={(el) => { itemRefs.current[idx] = el; }}
+                          subjectId={item.bangumiId}
                           coverUrl={item.cover}
                           title={displayName}
                           subtitle={subtitle}
@@ -434,6 +460,7 @@ export default function NextSeasonPage() {
                 <SubjectRow
                   key={item.id}
                   ref={(el) => { itemRefs.current[index] = el; }}
+                  subjectId={item.bangumiId}
                   coverUrl={item.cover}
                   title={displayName}
                   subtitle={subtitle}

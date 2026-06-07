@@ -110,6 +110,7 @@ export default function SearchPage() {
         <SubjectRow
           key={s.id}
           ref={(el) => { itemRefs.current[i] = el; }}
+          subjectId={s.id}
           coverUrl={s.images?.small}
           title={s.name_cn || s.name}
           subtitle={s.name_cn ? s.name : undefined}

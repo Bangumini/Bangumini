@@ -1,4 +1,8 @@
-import { forwardRef, type ReactNode } from "react";
+import { forwardRef, useEffect, useState, type ReactNode } from "react";
+import {
+  getPreferredSubjectCoverUrl,
+  readCachedSubject,
+} from "@shared/storage/sqlite-cache";
 import CachedImage from "./CachedImage";
 import { StarIcon } from "./icons";
 
@@ -27,6 +31,7 @@ export function Meta({ children }: { children: ReactNode }) {
 }
 
 interface Props {
+  subjectId?: number | null;
   coverUrl?: string;
   title: string;
   subtitle?: string;
@@ -38,10 +43,42 @@ interface Props {
 }
 
 export const SubjectRow = forwardRef<HTMLDivElement, Props>(function SubjectRow(
-  { coverUrl, title, subtitle, selected, onClick, onDoubleClick, accessories, size = "sm" },
+  { subjectId, coverUrl, title, subtitle, selected, onClick, onDoubleClick, accessories, size = "sm" },
   ref,
 ) {
+  const [cachedCover, setCachedCover] = useState<{
+    subjectId: number;
+    coverUrl: string | null;
+  } | null>(null);
   const cover = size === "md" ? "w-12 h-16" : "w-10 h-14";
+  const matchingCachedCover = cachedCover
+    && cachedCover.subjectId === subjectId
+    ? cachedCover.coverUrl
+    : null;
+  const resolvedCoverUrl = matchingCachedCover ?? coverUrl;
+
+  useEffect(() => {
+    if (!subjectId) return;
+
+    const resolvedSubjectId = subjectId;
+
+    let cancelled = false;
+
+    async function hydrateCachedCover() {
+      const subject = await readCachedSubject(resolvedSubjectId);
+      const cachedCover = getPreferredSubjectCoverUrl(subject);
+      if (!cancelled) {
+        setCachedCover({ subjectId: resolvedSubjectId, coverUrl: cachedCover });
+      }
+    }
+
+    void hydrateCachedCover();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [subjectId]);
+
   return (
     <div
       ref={ref}
@@ -51,9 +88,9 @@ export const SubjectRow = forwardRef<HTMLDivElement, Props>(function SubjectRow(
         selected ? "bg-selected" : "hover:bg-hover"
       }`}
     >
-      {coverUrl ? (
+      {resolvedCoverUrl ? (
         <CachedImage
-          src={coverUrl}
+          src={resolvedCoverUrl}
           alt=""
           loading="lazy"
           className={`${cover} rounded-md object-cover shrink-0 bg-elevated`}

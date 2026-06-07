@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import {
+  isUsefulImageUrl,
   readCachedImage,
   writeCachedImage,
 } from "@shared/storage/sqlite-cache";
@@ -31,6 +32,11 @@ export default function CachedImage({
     let cancelled = false;
 
     async function loadCachedImage() {
+      if (!isUsefulImageUrl(src)) {
+        setCachedSrc(null);
+        return;
+      }
+
       const cached = await readCachedImage(src);
       if (cancelled) return;
 

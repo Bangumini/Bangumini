@@ -524,6 +524,7 @@ export default function CollectionsPage() {
               <SubjectRow
                 key={s.id}
                 ref={(el) => { itemRefs.current[index] = el; }}
+                subjectId={s.id}
                 coverUrl={s.images?.small}
                 title={s.name_cn || s.name}
                 subtitle={s.name_cn ? s.name : undefined}
