@@ -55,6 +55,18 @@ function syncCollectionsCache(queryClient: QueryClient, subjectId: number) {
     },
   );
 }
+
+function getAirWeekdayLabel(airWeekday?: number, date?: string) {
+  const bangumiWeekdays = ["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  if (airWeekday && bangumiWeekdays[airWeekday]) return bangumiWeekdays[airWeekday];
+
+  const match = date?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const [, year, month, day] = match;
+  const jsWeekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return jsWeekdays[new Date(Number(year), Number(month) - 1, Number(day)).getDay()];
+}
 import { getUsername } from "../api/oauth";
 import { ChevronLeftIcon } from "../components/icons";
 import { MOD } from "../api/shortcut";
@@ -143,8 +155,7 @@ export default function SubjectDetailPage() {
     queryFn: async () => {
       try {
         const result = await getSubject(subjectId);
-        await writeCachedSubject(result);
-        return result;
+        return writeCachedSubject(result);
       } catch {
         return readCachedSubjectDeep(subjectId);
       }
@@ -219,6 +230,7 @@ export default function SubjectDetailPage() {
   const currentColType = collection?.type;
   const displayTarget = targetEp ?? currentEp;
   const isDirty = targetEp !== null && targetEp !== currentEp;
+  const airWeekdayLabel = getAirWeekdayLabel(subject?.air_weekday, subject?.date);
 
   const copyText = useCallback(async (text: string) => {
     await navigator.clipboard.writeText(text);
@@ -616,9 +628,9 @@ export default function SubjectDetailPage() {
                   className="text-fg-secondary cursor-pointer hover:text-accent transition-colors"
                   onClick={() => copyText(subject.date)}
                 >{subject.date}</span>
-                {subject.air_weekday ? (
+                {airWeekdayLabel ? (
                   <span className="text-fg-tertiary ml-1">
-                    ({["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"][subject.air_weekday]})
+                    ({airWeekdayLabel})
                   </span>
                 ) : null}
               </div>

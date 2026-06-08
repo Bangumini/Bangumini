@@ -94,6 +94,18 @@ function mergeSubjectPreview(current: Subject | null, incoming: Subject): Subjec
   };
 }
 
+function mergeSubjectFull(current: Subject | null, incoming: Subject): Subject {
+  if (!current) return incoming;
+
+  return {
+    ...incoming,
+    images: mergeSubjectImages(current.images, incoming.images),
+    rating: incoming.rating?.total ? incoming.rating : current.rating,
+    rank: incoming.rank || current.rank,
+    air_weekday: incoming.air_weekday ?? current.air_weekday,
+  };
+}
+
 async function initializeSchema(db: Database) {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS subjects (
@@ -255,11 +267,9 @@ export async function readCachedSubject(subjectId: number): Promise<Subject | nu
   }, null);
 }
 
-export async function writeCachedSubject(subject: Subject) {
+export async function writeCachedSubject(subject: Subject): Promise<Subject> {
   const current = await readCachedSubject(subject.id);
-  const payload = current
-    ? { ...subject, images: mergeSubjectImages(current.images, subject.images) }
-    : subject;
+  const payload = mergeSubjectFull(current, subject);
 
   await withDatabase(async (db) => {
     await db.execute(
@@ -271,6 +281,8 @@ export async function writeCachedSubject(subject: Subject) {
       [payload.id, JSON.stringify(payload), Date.now()],
     );
   }, undefined);
+
+  return payload;
 }
 
 export async function writeCachedSubjectPreview(subject: Subject | SubjectSmall) {
