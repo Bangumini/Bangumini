@@ -15,14 +15,22 @@ type PayloadRow = {
   payload_json: string;
 };
 
+type TimedPayloadRow = PayloadRow & {
+  updated_at: number;
+  accessed_at?: number | null;
+};
+
 type ImageCacheRow = {
   local_path: string;
   updated_at: number;
+  accessed_at?: number | null;
 };
 
 type CacheEntryRow = {
   cache_key: string;
   payload_json: string;
+  updated_at: number;
+  accessed_at?: number | null;
 };
 
 export type CachedImageRecord = {
@@ -32,6 +40,7 @@ export type CachedImageRecord = {
 };
 
 let dbPromise: Promise<Database> | null = null;
+export const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 100;
 
 const PLACEHOLDER_IMAGE_RE =
   /(^|[/_.-])(?:no[_\s-]?image|noimage|placeholder)([/_.-]|$)|[/_.-]default\.(?:jpg|jpeg|png|webp)(?:[?#]|$)/i;
@@ -106,12 +115,20 @@ function mergeSubjectFull(current: Subject | null, incoming: Subject): Subject {
   };
 }
 
+async function ensureAccessedAtColumn(db: Database, tableName: string) {
+  const columns = await db.select<Array<{ name: string }>>(`PRAGMA table_info(${tableName})`);
+  if (columns.some((column) => column.name === "accessed_at")) return;
+  await db.execute(`ALTER TABLE ${tableName} ADD COLUMN accessed_at INTEGER NOT NULL DEFAULT 0`);
+  await db.execute(`UPDATE ${tableName} SET accessed_at = updated_at WHERE accessed_at = 0`);
+}
+
 async function initializeSchema(db: Database) {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS subjects (
       id INTEGER PRIMARY KEY,
       payload_json TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      accessed_at INTEGER NOT NULL
     )
   `);
 
@@ -121,6 +138,7 @@ async function initializeSchema(db: Database) {
       subject_id INTEGER NOT NULL,
       payload_json TEXT NOT NULL,
       updated_at INTEGER NOT NULL,
+      accessed_at INTEGER NOT NULL,
       PRIMARY KEY (username, subject_id)
     )
   `);
@@ -131,6 +149,7 @@ async function initializeSchema(db: Database) {
       kind TEXT NOT NULL,
       payload_json TEXT NOT NULL,
       updated_at INTEGER NOT NULL,
+      accessed_at INTEGER NOT NULL,
       PRIMARY KEY (subject_id, kind)
     )
   `);
@@ -139,7 +158,8 @@ async function initializeSchema(db: Database) {
     CREATE TABLE IF NOT EXISTS cache_entries (
       cache_key TEXT PRIMARY KEY,
       payload_json TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      accessed_at INTEGER NOT NULL
     )
   `);
 
@@ -147,9 +167,16 @@ async function initializeSchema(db: Database) {
     CREATE TABLE IF NOT EXISTS image_cache (
       remote_url TEXT PRIMARY KEY,
       local_path TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      accessed_at INTEGER NOT NULL
     )
   `);
+
+  await ensureAccessedAtColumn(db, "subjects");
+  await ensureAccessedAtColumn(db, "subject_collections");
+  await ensureAccessedAtColumn(db, "subject_cache_entries");
+  await ensureAccessedAtColumn(db, "cache_entries");
+  await ensureAccessedAtColumn(db, "image_cache");
 }
 
 async function getDatabase() {
@@ -180,6 +207,52 @@ function parsePayload<T>(rows: PayloadRow[]): T | null {
   } catch {
     return null;
   }
+}
+
+function getAccessedAt(row: { updated_at: number; accessed_at?: number | null }) {
+  return row.accessed_at ?? row.updated_at;
+}
+
+function isFresh(row: { updated_at: number; accessed_at?: number | null }, now = Date.now()) {
+  return now - getAccessedAt(row) <= CACHE_TTL_MS;
+}
+
+function parseFreshPayload<T>(rows: TimedPayloadRow[]): T | null {
+  const row = rows[0];
+  if (!row || !isFresh(row)) return null;
+  return parsePayload<T>(rows);
+}
+
+async function touchSubject(db: Database, subjectId: number) {
+  await db.execute("UPDATE subjects SET accessed_at = $1 WHERE id = $2", [Date.now(), subjectId]);
+}
+
+async function touchSubjectEntry(db: Database, subjectId: number, kind: string) {
+  await db.execute(
+    "UPDATE subject_cache_entries SET accessed_at = $1 WHERE subject_id = $2 AND kind = $3",
+    [Date.now(), subjectId, kind],
+  );
+}
+
+async function touchCollection(db: Database, username: string, subjectId: number) {
+  await db.execute(
+    "UPDATE subject_collections SET accessed_at = $1 WHERE username = $2 AND subject_id = $3",
+    [Date.now(), username, subjectId],
+  );
+}
+
+async function touchCacheEntry(db: Database, cacheKey: string) {
+  await db.execute("UPDATE cache_entries SET accessed_at = $1 WHERE cache_key = $2", [
+    Date.now(),
+    cacheKey,
+  ]);
+}
+
+async function touchImage(db: Database, remoteUrl: string) {
+  await db.execute("UPDATE image_cache SET accessed_at = $1 WHERE remote_url = $2", [
+    Date.now(),
+    remoteUrl,
+  ]);
 }
 
 function subjectFromSmall(subject: SubjectSmall): Subject {
@@ -236,22 +309,25 @@ function findSubjectInPayload(subjectId: number, payload: unknown): Subject | nu
 
 async function readSubjectEntry<T>(subjectId: number, kind: string): Promise<T | null> {
   return withDatabase(async (db) => {
-    const rows = await db.select<PayloadRow[]>(
-      "SELECT payload_json FROM subject_cache_entries WHERE subject_id = $1 AND kind = $2 LIMIT 1",
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM subject_cache_entries WHERE subject_id = $1 AND kind = $2 LIMIT 1",
       [subjectId, kind],
     );
-    return parsePayload<T>(rows);
+    const payload = parseFreshPayload<T>(rows);
+    if (payload) await touchSubjectEntry(db, subjectId, kind);
+    return payload;
   }, null);
 }
 
 async function writeSubjectEntry(subjectId: number, kind: string, payload: unknown) {
   await withDatabase(async (db) => {
     await db.execute(
-      `INSERT INTO subject_cache_entries (subject_id, kind, payload_json, updated_at)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO subject_cache_entries (subject_id, kind, payload_json, updated_at, accessed_at)
+       VALUES ($1, $2, $3, $4, $4)
        ON CONFLICT(subject_id, kind) DO UPDATE SET
          payload_json = excluded.payload_json,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         accessed_at = excluded.updated_at`,
       [subjectId, kind, JSON.stringify(payload), Date.now()],
     );
   }, undefined);
@@ -259,11 +335,13 @@ async function writeSubjectEntry(subjectId: number, kind: string, payload: unkno
 
 export async function readCachedSubject(subjectId: number): Promise<Subject | null> {
   return withDatabase(async (db) => {
-    const rows = await db.select<PayloadRow[]>(
-      "SELECT payload_json FROM subjects WHERE id = $1 LIMIT 1",
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM subjects WHERE id = $1 LIMIT 1",
       [subjectId],
     );
-    return parsePayload<Subject>(rows);
+    const payload = parseFreshPayload<Subject>(rows);
+    if (payload) await touchSubject(db, subjectId);
+    return payload;
   }, null);
 }
 
@@ -273,11 +351,12 @@ export async function writeCachedSubject(subject: Subject): Promise<Subject> {
 
   await withDatabase(async (db) => {
     await db.execute(
-      `INSERT INTO subjects (id, payload_json, updated_at)
-       VALUES ($1, $2, $3)
+      `INSERT INTO subjects (id, payload_json, updated_at, accessed_at)
+       VALUES ($1, $2, $3, $3)
        ON CONFLICT(id) DO UPDATE SET
          payload_json = excluded.payload_json,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         accessed_at = excluded.updated_at`,
       [payload.id, JSON.stringify(payload), Date.now()],
     );
   }, undefined);
@@ -307,14 +386,16 @@ export async function readCachedSubjectDeep(subjectId: number): Promise<Subject 
 
   return withDatabase(async (db) => {
     const rows = await db.select<CacheEntryRow[]>(
-      "SELECT cache_key, payload_json FROM cache_entries",
+      "SELECT cache_key, payload_json, updated_at, accessed_at FROM cache_entries",
     );
 
     for (const row of rows) {
+      if (!isFresh(row)) continue;
       try {
         const payload = JSON.parse(row.payload_json) as unknown;
         const subject = findSubjectInPayload(subjectId, payload);
         if (subject) {
+          await touchCacheEntry(db, row.cache_key);
           await writeCachedSubject(subject);
           return subject;
         }
@@ -333,11 +414,13 @@ export async function readCachedCollection(
 ): Promise<UserCollection | null> {
   if (!username) return null;
   return withDatabase(async (db) => {
-    const rows = await db.select<PayloadRow[]>(
-      "SELECT payload_json FROM subject_collections WHERE username = $1 AND subject_id = $2 LIMIT 1",
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM subject_collections WHERE username = $1 AND subject_id = $2 LIMIT 1",
       [username, subjectId],
     );
-    return parsePayload<UserCollection>(rows);
+    const payload = parseFreshPayload<UserCollection>(rows);
+    if (payload) await touchCollection(db, username, subjectId);
+    return payload;
   }, null);
 }
 
@@ -345,11 +428,12 @@ export async function writeCachedCollection(username: string, collection: UserCo
   if (!username || !collection) return;
   await withDatabase(async (db) => {
     await db.execute(
-      `INSERT INTO subject_collections (username, subject_id, payload_json, updated_at)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO subject_collections (username, subject_id, payload_json, updated_at, accessed_at)
+       VALUES ($1, $2, $3, $4, $4)
        ON CONFLICT(username, subject_id) DO UPDATE SET
          payload_json = excluded.payload_json,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         accessed_at = excluded.updated_at`,
       [username, collection.subject_id, JSON.stringify(collection), Date.now()],
     );
   }, undefined);
@@ -391,11 +475,13 @@ export function writeCachedCharacters(subjectId: number, characters: RelatedChar
 
 export async function readCachedValue<T>(cacheKey: string): Promise<T | null> {
   return withDatabase(async (db) => {
-    const rows = await db.select<PayloadRow[]>(
-      "SELECT payload_json FROM cache_entries WHERE cache_key = $1 LIMIT 1",
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
       [cacheKey],
     );
-    return parsePayload<T>(rows);
+    const payload = parseFreshPayload<T>(rows);
+    if (payload) await touchCacheEntry(db, cacheKey);
+    return payload;
   }, null);
 }
 
@@ -427,11 +513,12 @@ export function readLegacyHttpCache<T>(cacheKey: string): T | null {
 export async function writeCachedValue(cacheKey: string, payload: unknown) {
   await withDatabase(async (db) => {
     await db.execute(
-      `INSERT INTO cache_entries (cache_key, payload_json, updated_at)
-       VALUES ($1, $2, $3)
+      `INSERT INTO cache_entries (cache_key, payload_json, updated_at, accessed_at)
+       VALUES ($1, $2, $3, $3)
        ON CONFLICT(cache_key) DO UPDATE SET
          payload_json = excluded.payload_json,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         accessed_at = excluded.updated_at`,
       [cacheKey, JSON.stringify(payload), Date.now()],
     );
   }, undefined);
@@ -462,11 +549,13 @@ export async function readCachedImage(remoteUrl: string): Promise<CachedImageRec
   if (!remoteUrl) return null;
   return withDatabase(async (db) => {
     const rows = await db.select<ImageCacheRow[]>(
-      "SELECT local_path, updated_at FROM image_cache WHERE remote_url = $1 LIMIT 1",
+      "SELECT local_path, updated_at, accessed_at FROM image_cache WHERE remote_url = $1 LIMIT 1",
       [remoteUrl],
     );
     const row = rows[0];
     if (!row) return null;
+    if (!isFresh(row)) return null;
+    await touchImage(db, remoteUrl);
     return {
       remoteUrl,
       localPath: row.local_path,
@@ -478,12 +567,31 @@ export async function readCachedImage(remoteUrl: string): Promise<CachedImageRec
 export async function writeCachedImage(record: CachedImageRecord) {
   await withDatabase(async (db) => {
     await db.execute(
-      `INSERT INTO image_cache (remote_url, local_path, updated_at)
-       VALUES ($1, $2, $3)
+      `INSERT INTO image_cache (remote_url, local_path, updated_at, accessed_at)
+       VALUES ($1, $2, $3, $3)
        ON CONFLICT(remote_url) DO UPDATE SET
          local_path = excluded.local_path,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         accessed_at = excluded.updated_at`,
       [record.remoteUrl, record.localPath, record.updatedAt],
     );
   }, undefined);
+}
+
+export async function cleanupExpiredCache(): Promise<string[]> {
+  return withDatabase(async (db) => {
+    const cutoff = Date.now() - CACHE_TTL_MS;
+    const expiredImages = await db.select<Array<{ local_path: string }>>(
+      "SELECT local_path FROM image_cache WHERE accessed_at < $1",
+      [cutoff],
+    );
+
+    await db.execute("DELETE FROM subjects WHERE accessed_at < $1", [cutoff]);
+    await db.execute("DELETE FROM subject_collections WHERE accessed_at < $1", [cutoff]);
+    await db.execute("DELETE FROM subject_cache_entries WHERE accessed_at < $1", [cutoff]);
+    await db.execute("DELETE FROM cache_entries WHERE accessed_at < $1", [cutoff]);
+    await db.execute("DELETE FROM image_cache WHERE accessed_at < $1", [cutoff]);
+
+    return expiredImages.map((row) => row.local_path);
+  }, []);
 }

@@ -6,6 +6,7 @@ import { getAccessToken, fetchAndCacheUsername } from "./api/oauth";
 import { useAuth } from "./hooks/useAuth";
 import { isTauri } from "./api/tauri-fetch";
 import { DEFAULT_SHORTCUT, loadStoredShortcut } from "./api/shortcut";
+import { cleanupExpiredCache } from "@shared/storage/sqlite-cache";
 import Layout from "./components/Layout";
 import SearchPage from "./pages/SearchPage";
 import CalendarPage from "./pages/CalendarPage";
@@ -31,6 +32,19 @@ export default function App() {
     const stored = loadStoredShortcut();
     if (stored === DEFAULT_SHORTCUT) return;
     invoke("register_shortcut", { accelerator: stored }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    cleanupExpiredCache()
+      .then((localPaths) => {
+        if (localPaths.length > 0) {
+          return invoke("delete_cached_files", { localPaths });
+        }
+        return undefined;
+      })
+      .catch(() => {});
   }, []);
 
   if (authLoading) {

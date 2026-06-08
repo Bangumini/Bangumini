@@ -216,14 +216,6 @@ async fn cache_image(app: tauri::AppHandle, remote_url: String) -> Result<CacheI
         .map_err(|e| e.to_string())?;
 
     let url_ext = extension_from_url(&remote_url);
-    if let Some(ext) = &url_ext {
-        let candidate = cache_dir.join(format!("{:016x}.{}", hash_url(&remote_url), ext));
-        if candidate.exists() {
-            return Ok(CacheImageResult {
-                local_path: candidate.to_string_lossy().into_owned(),
-            });
-        }
-    }
 
     let response = reqwest::Client::new()
         .get(url)
@@ -258,6 +250,30 @@ async fn cache_image(app: tauri::AppHandle, remote_url: String) -> Result<CacheI
     Ok(CacheImageResult {
         local_path: local_path.to_string_lossy().into_owned(),
     })
+}
+
+#[tauri::command]
+async fn delete_cached_files(app: tauri::AppHandle, local_paths: Vec<String>) -> Result<(), String> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("covers");
+    let cache_dir = cache_dir.canonicalize().unwrap_or(cache_dir);
+
+    for local_path in local_paths {
+        let path = std::path::PathBuf::from(local_path);
+        let canonical = match path.canonicalize() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if !canonical.starts_with(&cache_dir) {
+            continue;
+        }
+        let _ = tokio::fs::remove_file(canonical).await;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -409,6 +425,7 @@ pub fn run() {
             set_dragging,
             show_toast,
             cache_image,
+            delete_cached_files,
             start_hotkey_recording,
             stop_hotkey_recording
         ])
