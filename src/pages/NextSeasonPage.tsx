@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getNextSeason, getNextSeasonInfo } from "@shared/api/anilist";
 import type { NextSeasonItem } from "@shared/api/anilist";
@@ -11,6 +11,7 @@ import {
   getPreferredSubjectCoverUrl,
   isUsefulImageUrl,
   readCachedSubject,
+  readCachedValueWithin,
   readCachedValueWithLegacy,
   writeCachedValue,
 } from "@shared/storage/sqlite-cache";
@@ -129,7 +130,6 @@ function earliestEntryDay(entries: SeasonEntry[]): number | "tba" {
 
 export default function NextSeasonPage() {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const filterText = searchParams.get("filter") ?? "";
   const filterWeekday = searchParams.get("weekday") ?? "";
@@ -140,55 +140,57 @@ export default function NextSeasonPage() {
   const isFiltering = filterText !== "" || filterWeekday !== "";
   const nextSeasonCacheKey = getNextSeasonCacheKey();
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function hydrateNextSeason() {
-      await deleteCachedValuesByPrefixExcept(NEXT_SEASON_CACHE_PREFIX, nextSeasonCacheKey);
-      const cached = await readCachedValueWithLegacy<SeasonEntry[]>(
-        nextSeasonCacheKey,
-        readLegacyNextSeasonCache,
-      );
-      const resolved = cached ? await applyCachedSubjectCovers(cached) : null;
-      if (resolved?.changed) await writeCachedValue(nextSeasonCacheKey, resolved.entries);
-      if (!cancelled && cached && !queryClient.getQueryData(["next-season", seasonLabel])) {
-        queryClient.setQueryData(["next-season", seasonLabel], resolved?.entries ?? cached);
-      }
-    }
-
-    void hydrateNextSeason();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [nextSeasonCacheKey, queryClient, seasonLabel]);
-
   const { data: rawEntries, isLoading, error } = useQuery({
     queryKey: ["next-season", seasonLabel],
     queryFn: async () => {
-      const items = await getNextSeason();
+      await deleteCachedValuesByPrefixExcept(NEXT_SEASON_CACHE_PREFIX, nextSeasonCacheKey);
 
-      const results = await Promise.allSettled(
-        items.map(async (item) => {
-          const weekday = getWeekday(item);
-          const bangumiMatch = await searchAnimeSubject(item.title.native);
-          return {
-            ...item,
-            weekday,
-            nameCn: bangumiMatch?.name_cn ?? null,
-            bangumiId: bangumiMatch?.id ?? null,
-          } as SeasonEntry;
-        }),
+      const cached = await readCachedValueWithin<SeasonEntry[]>(
+        nextSeasonCacheKey,
+        NEXT_SEASON_CACHE_TTL,
       );
+      if (cached) {
+        const resolved = await applyCachedSubjectCovers(cached);
+        if (resolved.changed) await writeCachedValue(nextSeasonCacheKey, resolved.entries);
+        return resolved.entries;
+      }
 
-      const enriched = results
-        .filter((r): r is PromiseFulfilledResult<SeasonEntry> => r.status === "fulfilled")
-        .map((r) => r.value)
-        .filter((e) => !isAired(e));
+      try {
+        const items = await getNextSeason();
 
-      const resolved = await applyCachedSubjectCovers(enriched);
-      await writeCachedValue(nextSeasonCacheKey, resolved.entries);
-      return resolved.entries;
+        const results = await Promise.allSettled(
+          items.map(async (item) => {
+            const weekday = getWeekday(item);
+            const bangumiMatch = await searchAnimeSubject(item.title.native);
+            return {
+              ...item,
+              weekday,
+              nameCn: bangumiMatch?.name_cn ?? null,
+              bangumiId: bangumiMatch?.id ?? null,
+            } as SeasonEntry;
+          }),
+        );
+
+        const enriched = results
+          .filter((r): r is PromiseFulfilledResult<SeasonEntry> => r.status === "fulfilled")
+          .map((r) => r.value)
+          .filter((e) => !isAired(e));
+
+        const resolved = await applyCachedSubjectCovers(enriched);
+        await writeCachedValue(nextSeasonCacheKey, resolved.entries);
+        return resolved.entries;
+      } catch (err) {
+        const fallback = await readCachedValueWithLegacy<SeasonEntry[]>(
+          nextSeasonCacheKey,
+          readLegacyNextSeasonCache,
+        );
+        if (fallback) {
+          const resolved = await applyCachedSubjectCovers(fallback);
+          if (resolved.changed) await writeCachedValue(nextSeasonCacheKey, resolved.entries);
+          return resolved.entries;
+        }
+        throw err;
+      }
     },
     staleTime: NEXT_SEASON_CACHE_TTL,
   });

@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getCalendar } from "@shared/api/client";
 import type { CalendarItem } from "@shared/api/types";
 import {
+  readCachedValueWithin,
   readCachedValueWithLegacy,
   readLegacyHttpCache,
   writeCachedSubjectPreviews,
@@ -15,10 +16,11 @@ import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import type { SubjectSmall } from "@shared/api/types";
 import { SubjectRow, Rating, Meta } from "../components/SubjectRow";
 
+const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
+
 export default function CalendarPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const queryClient = useQueryClient();
   const today = getTodayBangumiWeekday();
   const [currentDay, setCurrentDay] = useState<number>(today);
   const [focusedIndex, setFocusedIndex] = useState(0);
@@ -28,36 +30,25 @@ export default function CalendarPage() {
   const filterWeekday = searchParams.get("weekday") ?? "";
   const isFiltering = filterText !== "" || filterWeekday !== "";
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function hydrateCalendar() {
-      const cached = await readCachedValueWithLegacy<CalendarItem[]>(
-        "calendar",
-        () => readLegacyHttpCache<CalendarItem[]>("calendar"),
-      );
-      if (cached) {
-        await writeCachedSubjectPreviews(cached.flatMap((day) => day.items));
-      }
-      if (!cancelled && cached && !queryClient.getQueryData(["calendar"])) {
-        queryClient.setQueryData(["calendar"], cached);
-      }
-    }
-
-    void hydrateCalendar();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [queryClient]);
-
   const { data: calendar, isLoading, error } = useQuery({
     queryKey: ["calendar"],
     queryFn: async () => {
-      const data = await getCalendar();
-      await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
-      await writeCachedValue("calendar", data);
-      return data;
+      const cached = await readCachedValueWithin<CalendarItem[]>("calendar", QUERY_CACHE_MAX_AGE);
+      if (cached) return cached;
+
+      try {
+        const data = await getCalendar();
+        await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
+        await writeCachedValue("calendar", data);
+        return data;
+      } catch (err) {
+        const fallback = await readCachedValueWithLegacy<CalendarItem[]>(
+          "calendar",
+          () => readLegacyHttpCache<CalendarItem[]>("calendar"),
+        );
+        if (fallback) return fallback;
+        throw err;
+      }
     },
     staleTime: 1000 * 60 * 60 * 24,
   });

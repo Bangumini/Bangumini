@@ -17,9 +17,14 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
   deleteCachedCollection,
   readCachedCharacters,
+  readCachedCharactersWithin,
   readCachedCollection,
+  readCachedCollectionWithin,
   readCachedEpisodes,
+  readCachedEpisodesWithin,
   readCachedPersons,
+  readCachedPersonsWithin,
+  readCachedSubjectDeepWithin,
   readCachedSubjectDeep,
   writeCachedCharacters,
   writeCachedCollection,
@@ -79,6 +84,8 @@ const COLLECTION_OPTIONS: { type: CollectionType; label: string; key: string }[]
   { type: 5, label: "抛弃", key: "5" },
 ];
 
+const DETAIL_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
+
 type ConfirmDialog = {
   title: string;
   message: string;
@@ -100,59 +107,12 @@ export default function SubjectDetailPage() {
   const initialEpStatus = useRef<number | null>(null);
   const leftColumnRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!Number.isFinite(subjectId)) return;
-
-    let cancelled = false;
-
-    async function hydrateFromCache() {
-      const uname = getUsername();
-      const [
-        cachedSubject,
-        cachedPersons,
-        cachedCharacters,
-        cachedEpisodes,
-        cachedCollection,
-      ] = await Promise.all([
-        readCachedSubjectDeep(subjectId),
-        readCachedPersons(subjectId),
-        readCachedCharacters(subjectId),
-        readCachedEpisodes(subjectId),
-        readCachedCollection(uname, subjectId),
-      ]);
-
-      if (cancelled) return;
-
-      if (cachedSubject && !queryClient.getQueryData(["subject", subjectId])) {
-        queryClient.setQueryData(["subject", subjectId], cachedSubject);
-      }
-      if (cachedPersons && !queryClient.getQueryData(["persons", subjectId])) {
-        queryClient.setQueryData(["persons", subjectId], cachedPersons);
-      }
-      if (cachedCharacters && !queryClient.getQueryData(["characters", subjectId])) {
-        queryClient.setQueryData(["characters", subjectId], cachedCharacters);
-      }
-      if (cachedEpisodes && !queryClient.getQueryData(["episodes", subjectId])) {
-        queryClient.setQueryData(["episodes", subjectId], cachedEpisodes);
-      }
-      if (cachedCollection && !queryClient.getQueryData(["collection", subjectId])) {
-        queryClient.setQueryData(["collection", subjectId], cachedCollection);
-        if (initialEpStatus.current === null) {
-          initialEpStatus.current = cachedCollection.ep_status;
-        }
-      }
-    }
-
-    void hydrateFromCache();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [queryClient, subjectId]);
-
   const { data: subject } = useQuery({
     queryKey: ["subject", subjectId],
     queryFn: async () => {
+      const cached = await readCachedSubjectDeepWithin(subjectId, DETAIL_CACHE_MAX_AGE);
+      if (cached) return cached;
+
       try {
         const result = await getSubject(subjectId);
         return writeCachedSubject(result);
@@ -165,6 +125,9 @@ export default function SubjectDetailPage() {
   const { data: persons } = useQuery({
     queryKey: ["persons", subjectId],
     queryFn: async () => {
+      const cached = await readCachedPersonsWithin(subjectId, DETAIL_CACHE_MAX_AGE);
+      if (cached) return cached;
+
       try {
         const result = await getSubjectPersons(subjectId);
         await writeCachedPersons(subjectId, result);
@@ -178,6 +141,9 @@ export default function SubjectDetailPage() {
   const { data: characters } = useQuery({
     queryKey: ["characters", subjectId],
     queryFn: async () => {
+      const cached = await readCachedCharactersWithin(subjectId, DETAIL_CACHE_MAX_AGE);
+      if (cached) return cached;
+
       try {
         const result = await getSubjectCharacters(subjectId);
         await writeCachedCharacters(subjectId, result);
@@ -191,6 +157,9 @@ export default function SubjectDetailPage() {
   const { data: episodeData } = useQuery({
     queryKey: ["episodes", subjectId],
     queryFn: async () => {
+      const cached = await readCachedEpisodesWithin(subjectId, DETAIL_CACHE_MAX_AGE);
+      if (cached) return cached;
+
       try {
         const result = await getEpisodes(subjectId);
         await writeCachedEpisodes(subjectId, result);
@@ -206,6 +175,15 @@ export default function SubjectDetailPage() {
     queryFn: async () => {
       const uname = getUsername();
       if (!uname) return null;
+
+      const cached = await readCachedCollectionWithin(uname, subjectId, DETAIL_CACHE_MAX_AGE);
+      if (cached) {
+        if (initialEpStatus.current === null) {
+          initialEpStatus.current = cached.ep_status;
+        }
+        return cached;
+      }
+
       try {
         const result = await getUserCollection(uname, subjectId);
         if (initialEpStatus.current === null && result) {

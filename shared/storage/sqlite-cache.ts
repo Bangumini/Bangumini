@@ -217,9 +217,19 @@ function isFresh(row: { updated_at: number; accessed_at?: number | null }, now =
   return now - getAccessedAt(row) <= CACHE_TTL_MS;
 }
 
+function isUpdatedWithin(row: { updated_at: number }, maxAgeMs: number, now = Date.now()) {
+  return now - row.updated_at <= maxAgeMs;
+}
+
 function parseFreshPayload<T>(rows: TimedPayloadRow[]): T | null {
   const row = rows[0];
   if (!row || !isFresh(row)) return null;
+  return parsePayload<T>(rows);
+}
+
+function parseRecentlyUpdatedPayload<T>(rows: TimedPayloadRow[], maxAgeMs: number): T | null {
+  const row = rows[0];
+  if (!row || !isUpdatedWithin(row, maxAgeMs)) return null;
   return parsePayload<T>(rows);
 }
 
@@ -319,6 +329,22 @@ async function readSubjectEntry<T>(subjectId: number, kind: string): Promise<T |
   }, null);
 }
 
+async function readSubjectEntryWithin<T>(
+  subjectId: number,
+  kind: string,
+  maxAgeMs: number,
+): Promise<T | null> {
+  return withDatabase(async (db) => {
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM subject_cache_entries WHERE subject_id = $1 AND kind = $2 LIMIT 1",
+      [subjectId, kind],
+    );
+    const payload = parseRecentlyUpdatedPayload<T>(rows, maxAgeMs);
+    if (payload) await touchSubjectEntry(db, subjectId, kind);
+    return payload;
+  }, null);
+}
+
 async function writeSubjectEntry(subjectId: number, kind: string, payload: unknown) {
   await withDatabase(async (db) => {
     await db.execute(
@@ -340,6 +366,21 @@ export async function readCachedSubject(subjectId: number): Promise<Subject | nu
       [subjectId],
     );
     const payload = parseFreshPayload<Subject>(rows);
+    if (payload) await touchSubject(db, subjectId);
+    return payload;
+  }, null);
+}
+
+export async function readCachedSubjectWithin(
+  subjectId: number,
+  maxAgeMs: number,
+): Promise<Subject | null> {
+  return withDatabase(async (db) => {
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM subjects WHERE id = $1 LIMIT 1",
+      [subjectId],
+    );
+    const payload = parseRecentlyUpdatedPayload<Subject>(rows, maxAgeMs);
     if (payload) await touchSubject(db, subjectId);
     return payload;
   }, null);
@@ -408,6 +449,37 @@ export async function readCachedSubjectDeep(subjectId: number): Promise<Subject 
   }, null);
 }
 
+export async function readCachedSubjectDeepWithin(
+  subjectId: number,
+  maxAgeMs: number,
+): Promise<Subject | null> {
+  const cached = await readCachedSubjectWithin(subjectId, maxAgeMs);
+  if (cached) return cached;
+
+  return withDatabase(async (db) => {
+    const rows = await db.select<CacheEntryRow[]>(
+      "SELECT cache_key, payload_json, updated_at, accessed_at FROM cache_entries WHERE updated_at >= $1",
+      [Date.now() - maxAgeMs],
+    );
+
+    for (const row of rows) {
+      try {
+        const payload = JSON.parse(row.payload_json) as unknown;
+        const subject = findSubjectInPayload(subjectId, payload);
+        if (subject) {
+          await touchCacheEntry(db, row.cache_key);
+          await writeCachedSubject(subject);
+          return subject;
+        }
+      } catch {
+        // Ignore malformed cache entries.
+      }
+    }
+
+    return null;
+  }, null);
+}
+
 export async function readCachedCollection(
   username: string,
   subjectId: number,
@@ -419,6 +491,23 @@ export async function readCachedCollection(
       [username, subjectId],
     );
     const payload = parseFreshPayload<UserCollection>(rows);
+    if (payload) await touchCollection(db, username, subjectId);
+    return payload;
+  }, null);
+}
+
+export async function readCachedCollectionWithin(
+  username: string,
+  subjectId: number,
+  maxAgeMs: number,
+): Promise<UserCollection | null> {
+  if (!username) return null;
+  return withDatabase(async (db) => {
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM subject_collections WHERE username = $1 AND subject_id = $2 LIMIT 1",
+      [username, subjectId],
+    );
+    const payload = parseRecentlyUpdatedPayload<UserCollection>(rows, maxAgeMs);
     if (payload) await touchCollection(db, username, subjectId);
     return payload;
   }, null);
@@ -453,6 +542,13 @@ export function readCachedEpisodes(subjectId: number): Promise<PagedResponse<Epi
   return readSubjectEntry<PagedResponse<Episode>>(subjectId, "episodes");
 }
 
+export function readCachedEpisodesWithin(
+  subjectId: number,
+  maxAgeMs: number,
+): Promise<PagedResponse<Episode> | null> {
+  return readSubjectEntryWithin<PagedResponse<Episode>>(subjectId, "episodes", maxAgeMs);
+}
+
 export function writeCachedEpisodes(subjectId: number, episodes: PagedResponse<Episode>) {
   return writeSubjectEntry(subjectId, "episodes", episodes);
 }
@@ -461,12 +557,26 @@ export function readCachedPersons(subjectId: number): Promise<RelatedPerson[] | 
   return readSubjectEntry<RelatedPerson[]>(subjectId, "persons");
 }
 
+export function readCachedPersonsWithin(
+  subjectId: number,
+  maxAgeMs: number,
+): Promise<RelatedPerson[] | null> {
+  return readSubjectEntryWithin<RelatedPerson[]>(subjectId, "persons", maxAgeMs);
+}
+
 export function writeCachedPersons(subjectId: number, persons: RelatedPerson[]) {
   return writeSubjectEntry(subjectId, "persons", persons);
 }
 
 export function readCachedCharacters(subjectId: number): Promise<RelatedCharacter[] | null> {
   return readSubjectEntry<RelatedCharacter[]>(subjectId, "characters");
+}
+
+export function readCachedCharactersWithin(
+  subjectId: number,
+  maxAgeMs: number,
+): Promise<RelatedCharacter[] | null> {
+  return readSubjectEntryWithin<RelatedCharacter[]>(subjectId, "characters", maxAgeMs);
 }
 
 export function writeCachedCharacters(subjectId: number, characters: RelatedCharacter[]) {
@@ -480,6 +590,21 @@ export async function readCachedValue<T>(cacheKey: string): Promise<T | null> {
       [cacheKey],
     );
     const payload = parseFreshPayload<T>(rows);
+    if (payload) await touchCacheEntry(db, cacheKey);
+    return payload;
+  }, null);
+}
+
+export async function readCachedValueWithin<T>(
+  cacheKey: string,
+  maxAgeMs: number,
+): Promise<T | null> {
+  return withDatabase(async (db) => {
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
+      [cacheKey],
+    );
+    const payload = parseRecentlyUpdatedPayload<T>(rows, maxAgeMs);
     if (payload) await touchCacheEntry(db, cacheKey);
     return payload;
   }, null);

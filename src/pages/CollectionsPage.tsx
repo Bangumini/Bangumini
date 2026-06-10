@@ -15,6 +15,7 @@ import {
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
   deleteCachedValuesByPrefix,
+  readCachedValueWithin,
   readCachedValueWithLegacy,
   readLegacyHttpCache,
   writeCachedSubjectPreviews,
@@ -27,6 +28,7 @@ const LIMIT = 20;
 const COLLECTIONS_CACHE_PREFIX = "collections-";
 const AIRING_CACHE_PREFIX = "anilist-airing-";
 const AIRING_REQUEST_DELAY = 700;
+const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
 
 type AiringTime = { airingAt: number; episode: number };
 type CollectionsLocationState = {
@@ -130,81 +132,60 @@ export default function CollectionsPage() {
 
   const collectionsCacheKey = `${COLLECTIONS_CACHE_PREFIX}${collectionType}-${uname}`;
 
-  useEffect(() => {
-    if (!uname) return;
-
-    let cancelled = false;
-
-    async function hydrateCollections() {
-      const cached = await readCachedValueWithLegacy<PagedResponse<UserCollection>>(
-        collectionsCacheKey,
-        () => readLegacyHttpCache<PagedResponse<UserCollection>>(`collections-${collectionType}-${uname}`),
-      );
-      if (cached) {
-        await writeCachedSubjectPreviews(cached.data.map((item) => item.subject));
-      }
-      if (!cancelled && cached && !queryClient.getQueryData(["collections", collectionType, uname])) {
-        queryClient.setQueryData(["collections", collectionType, uname], cached);
-      }
-    }
-
-    void hydrateCollections();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [collectionType, collectionsCacheKey, queryClient, uname]);
-
   const { data: collData, isLoading, error } = useQuery({
     queryKey: ["collections", collectionType, uname],
     queryFn: async () => {
       if (!uname) return { data: [], total: 0 };
-      let result;
-      if (collectionType === "3") {
-        result = await getAllUserCollections({ username: uname, type: 3 });
-      } else {
-        result = await getUserCollections({ username: uname, type: parseInt(collectionType), limit: 100 });
+
+      const legacyCollections = () => readLegacyHttpCache<PagedResponse<UserCollection>>(`collections-${collectionType}-${uname}`);
+      const cached = await readCachedValueWithin<PagedResponse<UserCollection>>(
+        collectionsCacheKey,
+        QUERY_CACHE_MAX_AGE,
+      );
+      if (cached) return cached;
+
+      try {
+        let result;
+        if (collectionType === "3") {
+          result = await getAllUserCollections({ username: uname, type: 3 });
+        } else {
+          result = await getUserCollections({ username: uname, type: parseInt(collectionType), limit: 100 });
+        }
+        await writeCachedSubjectPreviews(result.data.map((item) => item.subject));
+        await writeCachedValue(collectionsCacheKey, result);
+        return result;
+      } catch (err) {
+        const fallback = await readCachedValueWithLegacy<PagedResponse<UserCollection>>(
+          collectionsCacheKey,
+          legacyCollections,
+        );
+        if (fallback) return fallback;
+        throw err;
       }
-      await writeCachedSubjectPreviews(result.data.map((item) => item.subject));
-      await writeCachedValue(collectionsCacheKey, result);
-      return result;
     },
     enabled: !!uname,
     staleTime: 1000 * 60 * 60 * 24,
   });
 
-  useEffect(() => {
-    if (!isWatching) return;
-
-    let cancelled = false;
-
-    async function hydrateCalendar() {
-      const cached = await readCachedValueWithLegacy<CalendarItem[]>(
-        "calendar",
-        () => readLegacyHttpCache<CalendarItem[]>("calendar"),
-      );
-      if (cached) {
-        await writeCachedSubjectPreviews(cached.flatMap((day) => day.items));
-      }
-      if (!cancelled && cached && !queryClient.getQueryData(["calendar"])) {
-        queryClient.setQueryData(["calendar"], cached);
-      }
-    }
-
-    void hydrateCalendar();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isWatching, queryClient]);
-
   const { data: calendar, error: calError } = useQuery({
     queryKey: ["calendar"],
     queryFn: async () => {
-      const data = await getCalendar();
-      await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
-      await writeCachedValue("calendar", data);
-      return data;
+      const cached = await readCachedValueWithin<CalendarItem[]>("calendar", QUERY_CACHE_MAX_AGE);
+      if (cached) return cached;
+
+      try {
+        const data = await getCalendar();
+        await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
+        await writeCachedValue("calendar", data);
+        return data;
+      } catch (err) {
+        const fallback = await readCachedValueWithLegacy<CalendarItem[]>(
+          "calendar",
+          () => readLegacyHttpCache<CalendarItem[]>("calendar"),
+        );
+        if (fallback) return fallback;
+        throw err;
+      }
     },
     enabled: isWatching,
     staleTime: 1000 * 60 * 60 * 24,
@@ -226,47 +207,41 @@ export default function CollectionsPage() {
   const episodesCacheKey = `episodes-${airingIds.join(",")}`;
   const episodesQueryKey = ["episodes", airingIds.join(",")];
 
-  useEffect(() => {
-    if (!isWatching || airingIds.length === 0) return;
-
-    let cancelled = false;
-
-    async function hydrateEpisodes() {
-      const cached = await readCachedValueWithLegacy<[number, number][]>(
-        episodesCacheKey,
-        () => readLegacyHttpCache<[number, number][]>(episodesCacheKey),
-      );
-      if (!cancelled && cached && !queryClient.getQueryData(episodesQueryKey)) {
-        queryClient.setQueryData(episodesQueryKey, new Map<number, number>(cached));
-      }
-    }
-
-    void hydrateEpisodes();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [airingIds.length, episodesCacheKey, isWatching, queryClient]);
-
   const { data: episodeMap } = useQuery({
     queryKey: episodesQueryKey,
     queryFn: async () => {
       if (airingIds.length === 0) return new Map<number, number>();
-      const results = await Promise.allSettled(
-        airingIds.map((id) => getEpisodes(id).then((data) => ({ id, data }))),
+
+      const cached = await readCachedValueWithin<[number, number][]>(
+        episodesCacheKey,
+        QUERY_CACHE_MAX_AGE,
       );
-      const map = new Map<number, number>();
-      const todayStr = new Date().toISOString().slice(0, 10);
-      for (const r of results) {
-        if (r.status === "fulfilled") {
-          const { id, data } = r.value;
-          const mainEps = data.data.filter((ep) => ep.type === 0);
-          const airedCount = mainEps.filter((ep) => ep.airdate && ep.airdate <= todayStr).length;
-          map.set(id, airedCount);
+      if (cached) return new Map<number, number>(cached);
+
+      try {
+        const results = await Promise.allSettled(
+          airingIds.map((id) => getEpisodes(id).then((data) => ({ id, data }))),
+        );
+        const map = new Map<number, number>();
+        const todayStr = new Date().toISOString().slice(0, 10);
+        for (const r of results) {
+          if (r.status === "fulfilled") {
+            const { id, data } = r.value;
+            const mainEps = data.data.filter((ep) => ep.type === 0);
+            const airedCount = mainEps.filter((ep) => ep.airdate && ep.airdate <= todayStr).length;
+            map.set(id, airedCount);
+          }
         }
+        await writeCachedValue(episodesCacheKey, [...map]);
+        return map;
+      } catch (err) {
+        const fallback = await readCachedValueWithLegacy<[number, number][]>(
+          episodesCacheKey,
+          () => readLegacyHttpCache<[number, number][]>(episodesCacheKey),
+        );
+        if (fallback) return new Map<number, number>(fallback);
+        throw err;
       }
-      await writeCachedValue(episodesCacheKey, [...map]);
-      return map;
     },
     enabled: isWatching && airingIds.length > 0,
     staleTime: 1000 * 60 * 60 * 24,
