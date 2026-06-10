@@ -170,8 +170,32 @@ export default function SubjectDetailPage() {
     },
   });
 
-  const { data: collection, refetch: refetchCollection } = useQuery({
-    queryKey: ["collection", subjectId],
+  const collectionQueryKey = ["collection", subjectId] as const;
+
+  async function fetchCollectionFromNetwork() {
+    const uname = getUsername();
+    if (!uname) return null;
+
+    try {
+      const result = await getUserCollection(uname, subjectId);
+      if (initialEpStatus.current === null && result) {
+        initialEpStatus.current = result.ep_status;
+      }
+      await writeCachedCollection(uname, result);
+      queryClient.setQueryData(collectionQueryKey, result);
+      return result;
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        await deleteCachedCollection(uname, subjectId);
+        queryClient.setQueryData(collectionQueryKey, null);
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  const { data: collection } = useQuery({
+    queryKey: collectionQueryKey,
     queryFn: async () => {
       const uname = getUsername();
       if (!uname) return null;
@@ -185,17 +209,8 @@ export default function SubjectDetailPage() {
       }
 
       try {
-        const result = await getUserCollection(uname, subjectId);
-        if (initialEpStatus.current === null && result) {
-          initialEpStatus.current = result.ep_status;
-        }
-        await writeCachedCollection(uname, result);
-        return result;
-      } catch (error) {
-        if (isNotFoundError(error)) {
-          await deleteCachedCollection(uname, subjectId);
-          return null;
-        }
+        return await fetchCollectionFromNetwork();
+      } catch {
         return readCachedCollection(uname, subjectId);
       }
     },
@@ -234,7 +249,7 @@ export default function SubjectDetailPage() {
           onConfirm: () => {
             setConfirmDialog(null);
             postUserCollection(subjectId, { type: 3 })
-              .then(() => refetchCollection())
+              .then(() => fetchCollectionFromNetwork())
               .then(() => resolve(true))
               .catch(() => {
                 void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
@@ -253,7 +268,7 @@ export default function SubjectDetailPage() {
           onConfirm: () => {
             setConfirmDialog(null);
             postUserCollection(subjectId, { type: 3 })
-              .then(() => refetchCollection())
+              .then(() => fetchCollectionFromNetwork())
               .then(() => resolve(true))
               .catch(() => {
                 void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
@@ -282,7 +297,7 @@ export default function SubjectDetailPage() {
       if (ids.length > 0) {
         await patchSubjectEpisodes(subjectId, { episode_id: ids, type: targetEp > currentEp ? 2 : 0 });
       }
-      await refetchCollection();
+      await fetchCollectionFromNetwork();
       syncCollectionsCache(queryClient, subjectId);
       setTargetEp(null);
       saved = true;
@@ -304,7 +319,7 @@ export default function SubjectDetailPage() {
           setConfirmDialog(null);
           postUserCollection(subjectId, { type: 2 })
             .then(() => {
-              refetchCollection().then(() => syncCollectionsCache(queryClient, subjectId));
+              fetchCollectionFromNetwork().then(() => syncCollectionsCache(queryClient, subjectId));
             })
             .catch(() => {
               void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
@@ -319,7 +334,8 @@ export default function SubjectDetailPage() {
     setPaletteOpen(false);
     try {
       await postUserCollection(subjectId, { type });
-      refetchCollection().then(() => syncCollectionsCache(queryClient, subjectId));
+      await fetchCollectionFromNetwork();
+      syncCollectionsCache(queryClient, subjectId);
     } catch {
       await showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
     } finally {
