@@ -86,6 +86,10 @@ const COLLECTION_OPTIONS: { type: CollectionType; label: string; key: string }[]
 
 const DETAIL_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
 
+function hasSummary(subject: UserCollection["subject"] | null | undefined) {
+  return !!subject?.summary?.trim();
+}
+
 type ConfirmDialog = {
   title: string;
   message: string;
@@ -106,6 +110,7 @@ export default function SubjectDetailPage() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const initialEpStatus = useRef<number | null>(null);
   const collectionChangedRef = useRef(false);
+  const subjectRefreshRef = useRef<number | null>(null);
   const leftColumnRef = useRef<HTMLDivElement>(null);
 
   const { data: subject } = useQuery({
@@ -122,6 +127,29 @@ export default function SubjectDetailPage() {
       }
     },
   });
+
+  useEffect(() => {
+    if (!subject || hasSummary(subject) || subjectRefreshRef.current === subjectId) return;
+
+    let cancelled = false;
+    subjectRefreshRef.current = subjectId;
+
+    void (async () => {
+      try {
+        const result = await getSubject(subjectId);
+        const nextSubject = await writeCachedSubject(result);
+        if (!cancelled) {
+          queryClient.setQueryData(["subject", subjectId], nextSubject);
+        }
+      } catch {
+        // Keep showing the cached subject if the detail refresh fails.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [queryClient, subject, subjectId]);
 
   const { data: persons } = useQuery({
     queryKey: ["persons", subjectId],
