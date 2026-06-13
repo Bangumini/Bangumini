@@ -12,6 +12,7 @@ import {
   StarIcon,
 } from "./icons";
 import { MOD } from "../api/shortcut";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import CustomSelect from "./CustomSelect";
 import FetchIndicator from "./FetchIndicator";
 
@@ -180,18 +181,15 @@ export default function Layout() {
     }
   };
 
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      const target = e.target as HTMLElement;
-      const isInput = target.tagName === "INPUT";
-      const isSelect = target.tagName === "SELECT";
-      const mod = e.metaKey || e.ctrlKey;
-
-      if (e.key === "Escape" && !mod && !e.altKey) {
-        e.preventDefault();
+  useKeyboardShortcuts([
+    {
+      key: "Escape",
+      mod: false,
+      alt: false,
+      handler: ({ target, isTextInput }) => {
         if (filterPaletteOpen) {
           closeFilterPalette();
-        } else if (isInput && (target as HTMLInputElement).value) {
+        } else if (isTextInput && target instanceof HTMLInputElement && target.value) {
           (target as HTMLInputElement).value = "";
           const event = new Event("input", { bubbles: true });
           target.dispatchEvent(event);
@@ -200,17 +198,20 @@ export default function Layout() {
             getCurrentWindow().hide();
           });
         }
-        return;
-      }
-
-      if (e.key === "Tab" && !mod && !e.altKey) {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "Tab",
+      mod: false,
+      alt: false,
+      handler: () => {
         setCollapsed((v) => !v);
-        return;
-      }
-
-      if (mod && e.key === "p") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "p",
+      mod: true,
+      handler: () => {
         if (filterPaletteOpen) {
           closeFilterPalette();
           return;
@@ -219,76 +220,77 @@ export default function Layout() {
         else if (isCollections) openFilterPalette("collections");
         else if (isCalendar) openFilterPalette("calendar");
         else if (isNextSeason) openFilterPalette("next-season");
-        return;
-      }
-
-      if (filterPaletteOpen) {
+      },
+    },
+    {
+      key: "ArrowDown",
+      when: () => filterPaletteOpen,
+      stopPropagation: true,
+      handler: () => {
         const { options } = getPaletteConfig(filterPaletteKind);
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          e.stopPropagation();
-          setFilterPaletteIndex((i) => Math.min(options.length - 1, i + 1));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          e.stopPropagation();
-          setFilterPaletteIndex((i) => Math.max(0, i - 1));
-          return;
-        }
-        if (e.key === "Enter") {
-          e.preventDefault();
-          e.stopPropagation();
-          const opt = options[filterPaletteIndex];
-          if (opt) {
-            applyPaletteValue(filterPaletteKind, opt.value);
-            closeFilterPalette();
-          }
-          return;
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          e.stopPropagation();
+        setFilterPaletteIndex((i) => Math.min(options.length - 1, i + 1));
+      },
+    },
+    {
+      key: "ArrowUp",
+      when: () => filterPaletteOpen,
+      stopPropagation: true,
+      handler: () => {
+        setFilterPaletteIndex((i) => Math.max(0, i - 1));
+      },
+    },
+    {
+      key: "Enter",
+      when: () => filterPaletteOpen,
+      stopPropagation: true,
+      handler: () => {
+        const { options } = getPaletteConfig(filterPaletteKind);
+        const opt = options[filterPaletteIndex];
+        if (opt) {
+          applyPaletteValue(filterPaletteKind, opt.value);
           closeFilterPalette();
-          return;
         }
-        e.stopPropagation();
-        return;
-      }
-
-      if (mod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-        e.preventDefault();
-        const dir = e.key === "ArrowDown" ? 1 : -1;
+      },
+    },
+    {
+      when: () => filterPaletteOpen,
+      preventDefault: false,
+      stopPropagation: true,
+      handler: () => {},
+    },
+    {
+      key: ["ArrowDown", "ArrowUp"],
+      mod: true,
+      handler: ({ event }) => {
+        const dir = event.key === "ArrowDown" ? 1 : -1;
         const from = currentTabRef.current < 0 ? 0 : currentTabRef.current;
         const next = (from + dir + TABS.length) % TABS.length;
         navigate({ pathname: TABS[next].path, search: "" });
-        return;
-      }
-
-      if (mod) {
-        const tab = TABS.find((t) => t.key === e.key);
-        if (tab) {
-          e.preventDefault();
-          navigate({ pathname: tab.path, search: "" });
-          return;
-        }
-        if (e.key === "k") {
-          e.preventDefault();
-          inputRef.current?.focus();
-          return;
-        }
-      }
-
-      if (isInput || isSelect) return;
-
-      if (e.key === "/") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: TABS.map((tab) => tab.key),
+      mod: true,
+      handler: ({ event }) => {
+        const tab = TABS.find((t) => t.key === event.key);
+        if (tab) navigate({ pathname: tab.path, search: "" });
+      },
+    },
+    {
+      key: "k",
+      mod: true,
+      handler: () => {
         inputRef.current?.focus();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigate, filterPaletteOpen, filterPaletteIndex, filterPaletteKind, isSearchPage, isCollections, isCalendar, isNextSeason, searchParams, setSearchParams]);
+      },
+    },
+    {
+      key: "/",
+      when: ({ isTextInput, isSelect }) => !isTextInput && !isSelect,
+      handler: () => {
+        inputRef.current?.focus();
+      },
+    },
+  ], { priority: 20 });
 
   useEffect(() => {
     inputRef.current?.focus();

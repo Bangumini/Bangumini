@@ -23,6 +23,7 @@ import {
 } from "@shared/storage/sqlite-cache";
 import { getUsername } from "../api/oauth";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
 const LIMIT = 20;
 const COLLECTIONS_CACHE_PREFIX = "collections-";
@@ -421,22 +422,19 @@ export default function CollectionsPage() {
   };
 
   // Keyboard navigation
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      const itemCount = paged.length;
-      const mod = e.ctrlKey || e.metaKey;
-
-      if (e.key === "r" && mod && !isWatching) return; // let browser handle Ctrl+R on non-watching pages
-
-      if (e.key === "r" && mod && isWatching) {
-        e.preventDefault();
+  useKeyboardShortcuts([
+    {
+      key: "r",
+      mod: true,
+      when: () => isWatching,
+      handler: () => {
         clearAiringCache();
-        return;
-      }
-
-      // Ctrl+Enter: copy focused subject name and close window
-      if (e.key === "Enter" && mod) {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "Enter",
+      mod: true,
+      handler: () => {
         const item = paged[focusedIndex];
         if (item) {
           const name = item.subject.name_cn || item.subject.name;
@@ -446,40 +444,44 @@ export default function CollectionsPage() {
             getCurrentWindow().hide();
           });
         }
-        return;
-      }
-
-      // Ctrl/Cmd + Left/Right = pagination. (Ctrl/Cmd + Up/Down switches sidebar
-      // tabs and is handled in Layout, so we ignore those here.)
-      // Also allow plain Left/Right when coming from search page with empty query.
-      if ((mod || !searchText) && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-        if (e.key === "ArrowLeft") {
-          e.preventDefault();
+      },
+    },
+    {
+      key: ["ArrowLeft", "ArrowRight"],
+      when: ({ mod }) => mod || !searchText,
+      handler: ({ event }) => {
+        if (event.key === "ArrowLeft") {
           setPage((p) => Math.max(1, p - 1));
-        } else if (e.key === "ArrowRight") {
-          e.preventDefault();
+        } else {
           setPage((p) => Math.min(totalPages, p + 1));
         }
-        return;
-      }
-
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowUp",
+      when: () => paged.length > 0,
+      handler: () => {
         setFocusedIndex((i) => Math.max(0, i - 1));
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setFocusedIndex((i) => Math.min(itemCount - 1, i + 1));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowDown",
+      when: () => paged.length > 0,
+      handler: () => {
+        setFocusedIndex((i) => Math.min(paged.length - 1, i + 1));
+      },
+    },
+    {
+      key: "Enter",
+      when: () => paged.length > 0,
+      handler: () => {
         const item = paged[focusedIndex];
         if (item) {
           openSubject(item.subject.id);
         }
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [paged.length, focusedIndex, page, totalPages, navigate, searchText]);
+      },
+    },
+  ], { priority: 10 });
 
   return (
     <div className="h-full flex flex-col">

@@ -33,6 +33,7 @@ import {
   writeCachedSubject,
 } from "@shared/storage/sqlite-cache";
 import CachedImage from "../components/CachedImage";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
 function isNotFoundError(error: unknown) {
   return error instanceof Error && error.message.includes("Bangumi API error 404");
@@ -405,140 +406,142 @@ export default function SubjectDetailPage() {
   }, [collection, location, navigate, subjectId]);
 
   // Global keyboard shortcuts
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      const tag = (e.target as HTMLElement)?.tagName;
-      const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-
-      // Ctrl+O: open in browser (handle early, before other checks)
-      if (e.key === "o" && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        e.stopPropagation();
+  useKeyboardShortcuts([
+    {
+      key: "o",
+      mod: true,
+      stopPropagation: true,
+      handler: () => {
         import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
           openUrl(`https://bgm.tv/subject/${subjectId}`);
         });
-        return;
-      }
-
-      if (confirmDialog) {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          confirmDialog.onConfirm();
-          return;
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setConfirmDialog(null);
-          return;
-        }
-        return;
-      }
-
-      // Ctrl+K: command palette
-      if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "Enter",
+      when: () => Boolean(confirmDialog),
+      handler: () => {
+        confirmDialog?.onConfirm();
+      },
+    },
+    {
+      key: "Escape",
+      when: () => Boolean(confirmDialog),
+      handler: () => {
+        setConfirmDialog(null);
+      },
+    },
+    {
+      when: () => Boolean(confirmDialog),
+      preventDefault: false,
+      handler: () => {},
+    },
+    {
+      key: "k",
+      mod: true,
+      handler: () => {
         const idx = COLLECTION_OPTIONS.findIndex((o) => o.type === (currentColType ?? 3));
         setPaletteOpen((prev) => !prev);
         setPaletteIndex(idx >= 0 ? idx : 2); // default to "在看" (index 2)
-        return;
-      }
-
-      // Ctrl+Enter or Enter (when not in input): copy subject name and close window
-      if (e.key === "Enter" && ((e.ctrlKey || e.metaKey) || !isInput)) {
-        if (!paletteOpen && !isDirty) {
-          e.preventDefault();
-          const name = subject?.name_cn || subject?.name || "";
-          if (name) {
-            navigator.clipboard.writeText(name).then(async () => {
-              const { getCurrentWindow } = await import("@tauri-apps/api/window");
-              await invoke("show_toast", { message: "已复制条目名" });
-              getCurrentWindow().hide();
-            });
-          }
-          return;
+      },
+    },
+    {
+      key: "Enter",
+      when: ({ mod, isInput }) => (mod || !isInput) && !paletteOpen && !isDirty,
+      handler: () => {
+        const name = subject?.name_cn || subject?.name || "";
+        if (name) {
+          navigator.clipboard.writeText(name).then(async () => {
+            const { getCurrentWindow } = await import("@tauri-apps/api/window");
+            await invoke("show_toast", { message: "已复制条目名" });
+            getCurrentWindow().hide();
+          });
         }
-      }
-
-      if (paletteOpen) {
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          setPaletteIndex((i) => Math.min(COLLECTION_OPTIONS.length - 1, i + 1));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setPaletteIndex((i) => Math.max(0, i - 1));
-          return;
-        }
-        if (e.key === "Enter") {
-          e.preventDefault();
-          const opt = COLLECTION_OPTIONS[paletteIndex];
-          if (opt) setCollectionType(opt.type);
-          return;
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setPaletteOpen(false);
-          return;
-        }
-        // Number key quick select
-        const num = parseInt(e.key);
-        if (num >= 1 && num <= 5) {
-          e.preventDefault();
-          setCollectionType(num as CollectionType);
-          return;
-        }
-        return;
-      }
-
-      if (isInput) return;
-
-      // Backspace or Esc: go back (Esc only reaches here when the palette is closed)
-      if (e.key === "Backspace" || e.key === "Escape") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowDown",
+      when: () => paletteOpen,
+      handler: () => {
+        setPaletteIndex((i) => Math.min(COLLECTION_OPTIONS.length - 1, i + 1));
+      },
+    },
+    {
+      key: "ArrowUp",
+      when: () => paletteOpen,
+      handler: () => {
+        setPaletteIndex((i) => Math.max(0, i - 1));
+      },
+    },
+    {
+      key: "Enter",
+      when: () => paletteOpen,
+      handler: () => {
+        const opt = COLLECTION_OPTIONS[paletteIndex];
+        if (opt) setCollectionType(opt.type);
+      },
+    },
+    {
+      key: "Escape",
+      when: () => paletteOpen,
+      handler: () => {
+        setPaletteOpen(false);
+      },
+    },
+    {
+      key: ["1", "2", "3", "4", "5"],
+      when: () => paletteOpen,
+      handler: ({ event }) => {
+        setCollectionType(parseInt(event.key) as CollectionType);
+      },
+    },
+    {
+      when: () => paletteOpen,
+      preventDefault: false,
+      handler: () => {},
+    },
+    {
+      key: ["Backspace", "Escape"],
+      when: ({ isInput }) => !isInput,
+      handler: () => {
         handleBack();
-        return;
-      }
-
-      // ArrowUp/ArrowDown: scroll left column when no episodes or not adjusting progress
-      if (totalEp <= 0 || !isDirty) {
-        if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-          e.preventDefault();
-          const scrollAmount = 100;
-          if (leftColumnRef.current) {
-            leftColumnRef.current.scrollBy({
-              top: e.key === "ArrowDown" ? scrollAmount : -scrollAmount,
-              behavior: "smooth"
-            });
-          }
-          return;
+      },
+    },
+    {
+      key: ["ArrowUp", "ArrowDown"],
+      when: ({ isInput }) => !isInput && (totalEp <= 0 || !isDirty),
+      handler: ({ event }) => {
+        const scrollAmount = 100;
+        if (leftColumnRef.current) {
+          leftColumnRef.current.scrollBy({
+            top: event.key === "ArrowDown" ? scrollAmount : -scrollAmount,
+            behavior: "smooth",
+          });
         }
-      }
-
-      if (totalEp <= 0) return;
-
-      // ArrowRight: increment target episode
-      if (e.key === "ArrowRight") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowRight",
+      when: ({ isInput }) => !isInput && totalEp > 0,
+      handler: () => {
         setTargetEp((prev) => Math.min(totalEp, (prev ?? currentEp) + 1));
-        return;
-      }
-      // ArrowLeft: decrement target episode
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowLeft",
+      when: ({ isInput }) => !isInput && totalEp > 0,
+      handler: () => {
         setTargetEp((prev) => Math.max(0, (prev ?? currentEp) - 1));
-        return;
-      }
-      // Enter: commit progress
-      if (e.key === "Enter" && isDirty) {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "Enter",
+      when: ({ isInput }) => !isInput && totalEp > 0 && isDirty,
+      handler: () => {
         commitProgress();
-        return;
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown, true); // Use capture phase
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [paletteOpen, paletteIndex, totalEp, currentEp, targetEp, isDirty, handleBack, subject, confirmDialog, currentColType]);
+      },
+    },
+  ], { capture: true, priority: 10 });
 
   const staffMap = new Map<string, string[]>();
   (persons ?? []).forEach((p) => {

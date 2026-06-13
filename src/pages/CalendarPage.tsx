@@ -15,6 +15,7 @@ import { WEEKDAY_CN, getTodayBangumiWeekday } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import type { SubjectSmall } from "@shared/api/types";
 import { SubjectRow, Rating, Meta } from "../components/SubjectRow";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
 const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
 
@@ -109,14 +110,11 @@ export default function CalendarPage() {
   }, [focusedIndex]);
 
   // Keyboard navigation
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      const itemCount = displayItems.length;
-      const mod = e.ctrlKey || e.metaKey;
-
-      // Ctrl+Enter: copy focused subject name and close window
-      if (e.key === "Enter" && mod) {
-        e.preventDefault();
+  useKeyboardShortcuts([
+    {
+      key: "Enter",
+      mod: true,
+      handler: () => {
         const item = displayItems[focusedIndex];
         if (item) {
           const name = item.name_cn || item.name;
@@ -126,43 +124,49 @@ export default function CalendarPage() {
             getCurrentWindow().hide();
           });
         }
-        return;
-      }
-
-      // Ctrl/Cmd + Left/Right = switch day. (Ctrl/Cmd + Up/Down switches sidebar
-      // tabs and is handled in Layout, so we ignore those here.)
-      // Also allow plain Left/Right when not filtering.
-      if ((mod || !isFiltering) && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-        if (!isFiltering) {
-          if (e.key === "ArrowLeft") {
-            e.preventDefault();
-            setCurrentDay((d) => (d <= 1 ? 7 : d - 1));
-          } else if (e.key === "ArrowRight") {
-            e.preventDefault();
-            setCurrentDay((d) => (d >= 7 ? 1 : d + 1));
-          }
+      },
+    },
+    {
+      key: ["ArrowLeft", "ArrowRight"],
+      when: () => !isFiltering,
+      handler: ({ event }) => {
+        if (event.key === "ArrowLeft") {
+          setCurrentDay((d) => (d <= 1 ? 7 : d - 1));
+        } else {
+          setCurrentDay((d) => (d >= 7 ? 1 : d + 1));
         }
-        return;
-      }
-
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowUp",
+      when: () => displayItems.length > 0,
+      handler: () => {
         setFocusedIndex((i) => Math.max(0, i - 1));
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setFocusedIndex((i) => Math.min(itemCount - 1, i + 1));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowDown",
+      when: () => displayItems.length > 0,
+      handler: () => {
+        setFocusedIndex((i) => Math.min(displayItems.length - 1, i + 1));
+      },
+    },
+    {
+      key: "Enter",
+      when: () => displayItems.length > 0,
+      handler: () => {
         const item = displayItems[focusedIndex];
         if (item) navigate(`/subject/${item.id}`);
-      } else if (e.key === "Home" && !isFiltering) {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "Home",
+      when: () => !isFiltering,
+      handler: () => {
         setCurrentDay(today);
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [today, currentDay, focusedIndex, navigate, displayItems.length, isFiltering]);
+      },
+    },
+  ], { priority: 10 });
 
   if (isLoading && !calendar) return <p className="p-4 text-fg-tertiary text-[13px]">加载中…</p>;
   if (error && !calendar) return <p className="p-4 text-danger text-[13px]">加载出错: {String(error)}</p>;

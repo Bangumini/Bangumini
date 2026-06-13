@@ -16,6 +16,7 @@ import {
   writeCachedValue,
 } from "@shared/storage/sqlite-cache";
 import { SubjectRow, Meta } from "../components/SubjectRow";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
 const ANILIST_WEEKDAY_CN: Record<number, string> = {
   0: "星期日", 1: "星期一", 2: "星期二", 3: "星期三",
@@ -284,13 +285,11 @@ export default function NextSeasonPage() {
   }, [focusedIndex]);
 
   // Keyboard navigation
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      const itemCount = currentItems.length;
-      const mod = e.ctrlKey || e.metaKey;
-
-      if (e.key === "Enter" && mod) {
-        e.preventDefault();
+  useKeyboardShortcuts([
+    {
+      key: "Enter",
+      mod: true,
+      handler: () => {
         const item = currentItems[focusedIndex];
         if (item) {
           const name = item.nameCn || item.title.native;
@@ -300,11 +299,12 @@ export default function NextSeasonPage() {
             getCurrentWindow().hide();
           });
         }
-        return;
-      }
-
-      if (e.key === "ArrowLeft" && !isFiltering) {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowLeft",
+      when: () => !isFiltering,
+      handler: () => {
         setCurrentDay((d) => {
           if (d === "tba") {
             for (let i = 6; i >= 0; i--) {
@@ -319,11 +319,12 @@ export default function NextSeasonPage() {
           if (hasTba) return "tba";
           return d;
         });
-        return;
-      }
-
-      if (e.key === "ArrowRight" && !isFiltering) {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowRight",
+      when: () => !isFiltering,
+      handler: () => {
         setCurrentDay((d) => {
           if (d === "tba") return "tba";
           for (let offset = 1; offset <= 7; offset++) {
@@ -333,17 +334,26 @@ export default function NextSeasonPage() {
           if (hasTba) return "tba";
           return d;
         });
-        return;
-      }
-
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowUp",
+      when: () => currentItems.length > 0,
+      handler: () => {
         setFocusedIndex((i) => Math.max(0, i - 1));
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setFocusedIndex((i) => Math.min(itemCount - 1, i + 1));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
+      },
+    },
+    {
+      key: "ArrowDown",
+      when: () => currentItems.length > 0,
+      handler: () => {
+        setFocusedIndex((i) => Math.min(currentItems.length - 1, i + 1));
+      },
+    },
+    {
+      key: "Enter",
+      when: () => currentItems.length > 0,
+      handler: () => {
         const item = currentItems[focusedIndex];
         if (item?.bangumiId) {
           navigate(`/subject/${item.bangumiId}`);
@@ -352,11 +362,9 @@ export default function NextSeasonPage() {
             openUrl(`https://anilist.co/anime/${item.id}`);
           });
         }
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentItems, focusedIndex, navigate, availableDays, hasTba, isFiltering]);
+      },
+    },
+  ], { priority: 10 });
 
   return (
     <div className="h-full flex flex-col">
