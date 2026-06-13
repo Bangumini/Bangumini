@@ -10,12 +10,15 @@ import ShortcutRecorder from "../components/ShortcutRecorder";
 type DistributionKind = "installer" | "portable";
 
 const getPortableDownloadUrl = (version: string) => {
-  if (!version) {
+  const normalizedVersion = version.trim();
+
+  if (!normalizedVersion) {
     return "https://github.com/Flartiny/Bangumini/releases/latest";
   }
 
-  const plainVersion = version.replace(/^v/, "");
-  return `https://github.com/Flartiny/Bangumini/releases/download/${version}/Bangumini_${plainVersion}_portable.zip`;
+  const plainVersion = normalizedVersion.replace(/^v/i, "");
+  const tagVersion = `v${plainVersion}`;
+  return `https://github.com/Flartiny/Bangumini/releases/download/${tagVersion}/Bangumini_${plainVersion}_portable.zip`;
 };
 
 export default function SettingsPage() {
