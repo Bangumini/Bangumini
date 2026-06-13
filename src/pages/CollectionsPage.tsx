@@ -28,6 +28,7 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 const LIMIT = 20;
 const COLLECTIONS_CACHE_PREFIX = "collections-";
 const AIRING_CACHE_PREFIX = "anilist-airing-";
+const EPISODES_CACHE_PREFIX = "episodes-";
 const AIRING_REQUEST_DELAY = 700;
 const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
 const EMPTY_COLLECTIONS: UserCollection[] = [];
@@ -83,6 +84,13 @@ function readLegacyAiringCache(subjectId: number): AiringTime | null {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getLocalDateString(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export default function CollectionsPage() {
@@ -216,8 +224,9 @@ export default function CollectionsPage() {
     return ids;
   }, [calendar]);
 
-  const episodesCacheKey = `episodes-${airingIds.join(",")}`;
-  const episodesQueryKey = ["episodes", airingIds.join(",")];
+  const todayDateKey = getLocalDateString();
+  const episodesCacheKey = `${EPISODES_CACHE_PREFIX}${todayDateKey}-${airingIds.join(",")}`;
+  const episodesQueryKey = ["episodes", todayDateKey, airingIds.join(",")];
 
   const { data: episodeMap } = useQuery({
     queryKey: episodesQueryKey,
@@ -235,12 +244,11 @@ export default function CollectionsPage() {
           airingIds.map((id) => getEpisodes(id).then((data) => ({ id, data }))),
         );
         const map = new Map<number, number>();
-        const todayStr = new Date().toISOString().slice(0, 10);
         for (const r of results) {
           if (r.status === "fulfilled") {
             const { id, data } = r.value;
             const mainEps = data.data.filter((ep) => ep.type === 0);
-            const airedCount = mainEps.filter((ep) => ep.airdate && ep.airdate <= todayStr).length;
+            const airedCount = mainEps.filter((ep) => ep.airdate && ep.airdate <= todayDateKey).length;
             map.set(id, airedCount);
           }
         }
@@ -416,7 +424,10 @@ export default function CollectionsPage() {
 
   const clearAiringCache = async () => {
     await deleteCachedValuesByPrefix(AIRING_CACHE_PREFIX);
+    await deleteCachedValuesByPrefix(EPISODES_CACHE_PREFIX);
+    queryClient.resetQueries({ queryKey: ["episodes"] });
     queryClient.resetQueries({ queryKey: ["anilist-airing-times"] });
+    await queryClient.refetchQueries({ queryKey: ["episodes"] });
     await queryClient.refetchQueries({ queryKey: ["anilist-airing-times"] });
     invoke("show_toast", { message: "播出时间已刷新" });
   };
