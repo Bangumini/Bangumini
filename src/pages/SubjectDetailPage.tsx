@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -96,6 +96,62 @@ function hasSummary(subject: UserCollection["subject"] | null | undefined) {
   return !!subject?.summary?.trim();
 }
 
+function normalizeForCompare(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeForCompare);
+  if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    return Object.keys(source)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = normalizeForCompare(source[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
+function arePayloadsEqual(left: unknown, right: unknown) {
+  try {
+    return JSON.stringify(normalizeForCompare(left)) === JSON.stringify(normalizeForCompare(right));
+  } catch {
+    return left === right;
+  }
+}
+
+function setQueryDataIfChanged<T>(
+  queryClient: QueryClient,
+  queryKey: readonly unknown[],
+  next: T,
+) {
+  const current = queryClient.getQueryData<T>(queryKey);
+  if (!arePayloadsEqual(current, next)) {
+    queryClient.setQueryData(queryKey, next);
+  }
+}
+
+const inFlightDetailRefreshes = new Set<string>();
+
+function refreshQueryInBackground<T>(
+  queryClient: QueryClient,
+  queryKey: readonly unknown[],
+  loadFresh: () => Promise<T>,
+) {
+  const refreshKey = JSON.stringify(queryKey);
+  if (inFlightDetailRefreshes.has(refreshKey)) return;
+  inFlightDetailRefreshes.add(refreshKey);
+
+  void (async () => {
+    try {
+      const next = await loadFresh();
+      setQueryDataIfChanged(queryClient, queryKey, next);
+    } catch {
+      // Keep showing the stale cached data if the refresh fails.
+    } finally {
+      inFlightDetailRefreshes.delete(refreshKey);
+    }
+  })();
+}
+
 function getSummaryBlocks(summary: string): SummaryBlock[] {
   const blocks: SummaryBlock[] = [];
 
@@ -136,57 +192,74 @@ export default function SubjectDetailPage() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const initialEpStatus = useRef<number | null>(null);
   const collectionChangedRef = useRef(false);
-  const subjectRefreshRef = useRef<number | null>(null);
   const leftColumnRef = useRef<HTMLDivElement>(null);
+  const subjectQueryKey = ["subject", subjectId] as const;
+  const personsQueryKey = ["persons", subjectId] as const;
+  const charactersQueryKey = ["characters", subjectId] as const;
+  const episodesQueryKey = ["episodes", subjectId] as const;
+
+  async function fetchSubjectFromNetwork() {
+    const result = await getSubject(subjectId);
+    return writeCachedSubject(result);
+  }
+
+  async function fetchPersonsFromNetwork() {
+    const result = await getSubjectPersons(subjectId);
+    await writeCachedPersons(subjectId, result);
+    return result;
+  }
+
+  async function fetchCharactersFromNetwork() {
+    const result = await getSubjectCharacters(subjectId);
+    await writeCachedCharacters(subjectId, result);
+    return result;
+  }
+
+  async function fetchEpisodesFromNetwork() {
+    const result = await getEpisodes(subjectId);
+    await writeCachedEpisodes(subjectId, result);
+    return result;
+  }
 
   const { data: subject } = useQuery({
-    queryKey: ["subject", subjectId],
+    queryKey: subjectQueryKey,
     queryFn: async () => {
       const cached = await readCachedSubjectDeepWithin(subjectId, DETAIL_CACHE_MAX_AGE);
-      if (cached) return cached;
+      if (cached) {
+        if (!hasSummary(cached)) {
+          refreshQueryInBackground(queryClient, subjectQueryKey, fetchSubjectFromNetwork);
+        }
+        return cached;
+      }
+
+      const stale = await readCachedSubjectDeep(subjectId);
+      if (stale) {
+        refreshQueryInBackground(queryClient, subjectQueryKey, fetchSubjectFromNetwork);
+        return stale;
+      }
 
       try {
-        const result = await getSubject(subjectId);
-        return writeCachedSubject(result);
+        return fetchSubjectFromNetwork();
       } catch {
         return readCachedSubjectDeep(subjectId);
       }
     },
   });
 
-  useEffect(() => {
-    if (!subject || hasSummary(subject) || subjectRefreshRef.current === subjectId) return;
-
-    let cancelled = false;
-    subjectRefreshRef.current = subjectId;
-
-    void (async () => {
-      try {
-        const result = await getSubject(subjectId);
-        const nextSubject = await writeCachedSubject(result);
-        if (!cancelled) {
-          queryClient.setQueryData(["subject", subjectId], nextSubject);
-        }
-      } catch {
-        // Keep showing the cached subject if the detail refresh fails.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [queryClient, subject, subjectId]);
-
   const { data: persons } = useQuery({
-    queryKey: ["persons", subjectId],
+    queryKey: personsQueryKey,
     queryFn: async () => {
       const cached = await readCachedPersonsWithin(subjectId, DETAIL_CACHE_MAX_AGE);
       if (cached) return cached;
 
+      const stale = await readCachedPersons(subjectId);
+      if (stale) {
+        refreshQueryInBackground(queryClient, personsQueryKey, fetchPersonsFromNetwork);
+        return stale;
+      }
+
       try {
-        const result = await getSubjectPersons(subjectId);
-        await writeCachedPersons(subjectId, result);
-        return result;
+        return fetchPersonsFromNetwork();
       } catch {
         return readCachedPersons(subjectId);
       }
@@ -194,15 +267,19 @@ export default function SubjectDetailPage() {
   });
 
   const { data: characters } = useQuery({
-    queryKey: ["characters", subjectId],
+    queryKey: charactersQueryKey,
     queryFn: async () => {
       const cached = await readCachedCharactersWithin(subjectId, DETAIL_CACHE_MAX_AGE);
       if (cached) return cached;
 
+      const stale = await readCachedCharacters(subjectId);
+      if (stale) {
+        refreshQueryInBackground(queryClient, charactersQueryKey, fetchCharactersFromNetwork);
+        return stale;
+      }
+
       try {
-        const result = await getSubjectCharacters(subjectId);
-        await writeCachedCharacters(subjectId, result);
-        return result;
+        return fetchCharactersFromNetwork();
       } catch {
         return readCachedCharacters(subjectId);
       }
@@ -210,15 +287,19 @@ export default function SubjectDetailPage() {
   });
 
   const { data: episodeData } = useQuery({
-    queryKey: ["episodes", subjectId],
+    queryKey: episodesQueryKey,
     queryFn: async () => {
       const cached = await readCachedEpisodesWithin(subjectId, DETAIL_CACHE_MAX_AGE);
       if (cached) return cached;
 
+      const stale = await readCachedEpisodes(subjectId);
+      if (stale) {
+        refreshQueryInBackground(queryClient, episodesQueryKey, fetchEpisodesFromNetwork);
+        return stale;
+      }
+
       try {
-        const result = await getEpisodes(subjectId);
-        await writeCachedEpisodes(subjectId, result);
-        return result;
+        return fetchEpisodesFromNetwork();
       } catch {
         return readCachedEpisodes(subjectId);
       }
@@ -237,12 +318,12 @@ export default function SubjectDetailPage() {
         initialEpStatus.current = result.ep_status;
       }
       await writeCachedCollection(uname, result);
-      queryClient.setQueryData(collectionQueryKey, result);
+      setQueryDataIfChanged(queryClient, collectionQueryKey, result);
       return result;
     } catch (error) {
       if (isNotFoundError(error)) {
         await deleteCachedCollection(uname, subjectId);
-        queryClient.setQueryData(collectionQueryKey, null);
+        setQueryDataIfChanged(queryClient, collectionQueryKey, null);
         return null;
       }
       throw error;
@@ -261,6 +342,15 @@ export default function SubjectDetailPage() {
           initialEpStatus.current = cached.ep_status;
         }
         return cached;
+      }
+
+      const stale = await readCachedCollection(uname, subjectId);
+      if (stale) {
+        if (initialEpStatus.current === null) {
+          initialEpStatus.current = stale.ep_status;
+        }
+        void fetchCollectionFromNetwork().catch(() => {});
+        return stale;
       }
 
       try {
