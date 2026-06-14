@@ -451,7 +451,7 @@ pub fn run() {
             let window = app.get_webview_window("main").unwrap();
 
             // Register updater plugin
-            app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            app.handle().plugin(updater_builder().build())?;
 
             // Refresh existing auto-start entries so they include the startup marker.
             // Older entries may have been registered without arguments.
@@ -597,6 +597,28 @@ fn prevent_default_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .platform(PlatformOptions::new()
             .browser_accelerator_keys(false))
         .build()
+}
+
+#[cfg(windows)]
+fn updater_builder() -> tauri_plugin_updater::Builder {
+    let mut builder = tauri_plugin_updater::Builder::new();
+
+    if detect_distribution_kind() == "installer" {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                // NSIS uses /D= as the target install directory. Updater builder
+                // args are appended after config args, keeping /D= last.
+                builder = builder.installer_arg(format!("/D={}", dir.display()));
+            }
+        }
+    }
+
+    builder
+}
+
+#[cfg(not(windows))]
+fn updater_builder() -> tauri_plugin_updater::Builder {
+    tauri_plugin_updater::Builder::new()
 }
 
 #[tauri::command]
