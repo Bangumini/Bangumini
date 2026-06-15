@@ -15,6 +15,7 @@ import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
   deleteCachedValuesByPrefix,
   readCachedValue,
+  readCachedValueEntry,
   readCachedValueWithin,
   readCachedValueWithLegacy,
   readLegacyHttpCache,
@@ -22,6 +23,7 @@ import {
   writeCachedValue,
 } from "@shared/storage/sqlite-cache";
 import { getUsername } from "../api/oauth";
+import { isCacheStale, refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
@@ -34,6 +36,7 @@ const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
 const EPISODES_CACHE_MAX_AGE = 1000 * 60 * 30;
 const EMPTY_COLLECTIONS: UserCollection[] = [];
 const EMPTY_EPISODE_MAP = new Map<number, number>();
+const CALENDAR_QUERY_KEY = ["calendar"] as const;
 
 type AiringTime = { airingAt: number; episode: number };
 type EpisodeCountCache = {
@@ -203,6 +206,27 @@ async function fetchAiredEpisodeCount(subjectId: number, todayDateKey: string) {
   return mainEps.filter((ep) => ep.airdate && ep.airdate <= todayDateKey).length;
 }
 
+async function fetchAndCacheCollections(
+  collectionType: string,
+  uname: string,
+  collectionsCacheKey: string,
+) {
+  const result = collectionType === "3"
+    ? await getAllUserCollections({ username: uname, type: 3 })
+    : await getUserCollections({ username: uname, type: parseInt(collectionType), limit: 100 });
+
+  await writeCachedSubjectPreviews(result.data.map((item) => item.subject));
+  await writeCachedValue(collectionsCacheKey, result);
+  return result;
+}
+
+async function fetchAndCacheCalendar() {
+  const data = await getCalendar();
+  await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
+  await writeCachedValue("calendar", data);
+  return data;
+}
+
 export default function CollectionsPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -278,29 +302,30 @@ export default function CollectionsPage() {
   }, [location, queryClient]);
 
   const collectionsCacheKey = `${COLLECTIONS_CACHE_PREFIX}${collectionType}-${uname}`;
+  const collectionsQueryKey = ["collections", collectionType, uname] as const;
 
   const { data: collData, isLoading, error } = useQuery({
-    queryKey: ["collections", collectionType, uname],
+    queryKey: collectionsQueryKey,
     queryFn: async () => {
       if (!uname) return { data: [], total: 0 };
 
       const legacyCollections = () => readLegacyHttpCache<PagedResponse<UserCollection>>(`collections-${collectionType}-${uname}`);
-      const cached = await readCachedValueWithin<PagedResponse<UserCollection>>(
-        collectionsCacheKey,
-        QUERY_CACHE_MAX_AGE,
-      );
-      if (cached) return cached;
+      const cached = await readCachedValueEntry<PagedResponse<UserCollection>>(collectionsCacheKey);
+      if (cached) {
+        if (isCacheStale(cached.updatedAt, QUERY_CACHE_MAX_AGE)) {
+          refreshQueryDataIfChanged({
+            queryClient,
+            queryKey: collectionsQueryKey,
+            refreshKey: collectionsCacheKey,
+            currentData: cached.payload,
+            refresh: () => fetchAndCacheCollections(collectionType, uname, collectionsCacheKey),
+          });
+        }
+        return cached.payload;
+      }
 
       try {
-        let result;
-        if (collectionType === "3") {
-          result = await getAllUserCollections({ username: uname, type: 3 });
-        } else {
-          result = await getUserCollections({ username: uname, type: parseInt(collectionType), limit: 100 });
-        }
-        await writeCachedSubjectPreviews(result.data.map((item) => item.subject));
-        await writeCachedValue(collectionsCacheKey, result);
-        return result;
+        return await fetchAndCacheCollections(collectionType, uname, collectionsCacheKey);
       } catch (err) {
         const fallback = await readCachedValueWithLegacy<PagedResponse<UserCollection>>(
           collectionsCacheKey,
@@ -311,20 +336,28 @@ export default function CollectionsPage() {
       }
     },
     enabled: !!uname,
-    staleTime: 1000 * 60 * 60 * 24,
+    staleTime: 0,
   });
 
   const { data: calendar, error: calError } = useQuery({
-    queryKey: ["calendar"],
+    queryKey: CALENDAR_QUERY_KEY,
     queryFn: async () => {
-      const cached = await readCachedValueWithin<CalendarItem[]>("calendar", QUERY_CACHE_MAX_AGE);
-      if (cached) return cached;
+      const cached = await readCachedValueEntry<CalendarItem[]>("calendar");
+      if (cached) {
+        if (isCacheStale(cached.updatedAt, QUERY_CACHE_MAX_AGE)) {
+          refreshQueryDataIfChanged({
+            queryClient,
+            queryKey: CALENDAR_QUERY_KEY,
+            refreshKey: "calendar",
+            currentData: cached.payload,
+            refresh: fetchAndCacheCalendar,
+          });
+        }
+        return cached.payload;
+      }
 
       try {
-        const data = await getCalendar();
-        await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
-        await writeCachedValue("calendar", data);
-        return data;
+        return await fetchAndCacheCalendar();
       } catch (err) {
         const fallback = await readCachedValueWithLegacy<CalendarItem[]>(
           "calendar",
@@ -335,7 +368,7 @@ export default function CollectionsPage() {
       }
     },
     enabled: isWatching,
-    staleTime: 1000 * 60 * 60 * 24,
+    staleTime: 0,
   });
 
   const rawCollections = collData?.data ?? EMPTY_COLLECTIONS;
@@ -563,7 +596,6 @@ export default function CollectionsPage() {
 
     // If page changed, reset to first item
     if (prevPageRef.current !== page) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFocusedIndex(0);
       prevPageRef.current = page;
     } else if (paged.length > 0) {
@@ -582,9 +614,7 @@ export default function CollectionsPage() {
     }
     // Only reset if type or search actually changed
     if (prevTypeRef.current !== collectionType || prevSearchRef.current !== searchText) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPage(1);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFocusedIndex(0);
       prevTypeRef.current = collectionType;
       prevSearchRef.current = searchText;
@@ -605,7 +635,7 @@ export default function CollectionsPage() {
     if (item) {
       item.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-  }, [scrollKey]);
+  }, [focusedIndex, scrollKey]);
 
   function openSubject(subjectId: number) {
     writePageState(collectionType, searchText, page, focusedIndex);

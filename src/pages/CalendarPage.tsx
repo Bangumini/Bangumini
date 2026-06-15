@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getCalendar } from "@shared/api/client";
 import type { CalendarItem } from "@shared/api/types";
 import {
-  readCachedValueWithin,
+  readCachedValueEntry,
   readCachedValueWithLegacy,
   readLegacyHttpCache,
   writeCachedSubjectPreviews,
@@ -16,11 +16,21 @@ import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import type { SubjectSmall } from "@shared/api/types";
 import { SubjectRow, Rating, Meta } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { isCacheStale, refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
 
 const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
+const CALENDAR_QUERY_KEY = ["calendar"] as const;
+
+async function fetchAndCacheCalendar() {
+  const data = await getCalendar();
+  await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
+  await writeCachedValue("calendar", data);
+  return data;
+}
 
 export default function CalendarPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const today = getTodayBangumiWeekday();
   const [currentDay, setCurrentDay] = useState<number>(today);
@@ -32,16 +42,24 @@ export default function CalendarPage() {
   const isFiltering = filterText !== "" || filterWeekday !== "";
 
   const { data: calendar, isLoading, error } = useQuery({
-    queryKey: ["calendar"],
+    queryKey: CALENDAR_QUERY_KEY,
     queryFn: async () => {
-      const cached = await readCachedValueWithin<CalendarItem[]>("calendar", QUERY_CACHE_MAX_AGE);
-      if (cached) return cached;
+      const cached = await readCachedValueEntry<CalendarItem[]>("calendar");
+      if (cached) {
+        if (isCacheStale(cached.updatedAt, QUERY_CACHE_MAX_AGE)) {
+          refreshQueryDataIfChanged({
+            queryClient,
+            queryKey: CALENDAR_QUERY_KEY,
+            refreshKey: "calendar",
+            currentData: cached.payload,
+            refresh: fetchAndCacheCalendar,
+          });
+        }
+        return cached.payload;
+      }
 
       try {
-        const data = await getCalendar();
-        await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
-        await writeCachedValue("calendar", data);
-        return data;
+        return await fetchAndCacheCalendar();
       } catch (err) {
         const fallback = await readCachedValueWithLegacy<CalendarItem[]>(
           "calendar",
@@ -51,7 +69,7 @@ export default function CalendarPage() {
         throw err;
       }
     },
-    staleTime: 1000 * 60 * 60 * 24,
+    staleTime: 0,
   });
 
   // Build flat list of all items with their weekday context

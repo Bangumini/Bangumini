@@ -33,6 +33,12 @@ type CacheEntryRow = {
   accessed_at?: number | null;
 };
 
+export type CachedValueEntry<T> = {
+  payload: T;
+  updatedAt: number;
+  accessedAt: number;
+};
+
 export type CachedImageRecord = {
   remoteUrl: string;
   localPath: string;
@@ -592,6 +598,29 @@ export async function readCachedValue<T>(cacheKey: string): Promise<T | null> {
     const payload = parseFreshPayload<T>(rows);
     if (payload) await touchCacheEntry(db, cacheKey);
     return payload;
+  }, null);
+}
+
+export async function readCachedValueEntry<T>(
+  cacheKey: string,
+): Promise<CachedValueEntry<T> | null> {
+  return withDatabase(async (db) => {
+    const rows = await db.select<TimedPayloadRow[]>(
+      "SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
+      [cacheKey],
+    );
+    const row = rows[0];
+    if (!row || !isFresh(row)) return null;
+
+    const payload = parsePayload<T>(rows);
+    if (payload === null) return null;
+
+    await touchCacheEntry(db, cacheKey);
+    return {
+      payload,
+      updatedAt: row.updated_at,
+      accessedAt: getAccessedAt(row),
+    };
   }, null);
 }
 

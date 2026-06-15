@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getNextSeason, getNextSeasonInfo } from "@shared/api/anilist";
 import type { NextSeasonItem } from "@shared/api/anilist";
@@ -11,10 +11,11 @@ import {
   getPreferredSubjectCoverUrl,
   isUsefulImageUrl,
   readCachedSubject,
-  readCachedValueWithin,
+  readCachedValueEntry,
   readCachedValueWithLegacy,
   writeCachedValue,
 } from "@shared/storage/sqlite-cache";
+import { isCacheStale, refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
 import { SubjectRow, Meta } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
@@ -129,8 +130,35 @@ function earliestEntryDay(entries: SeasonEntry[]): number | "tba" {
   return earliestDay;
 }
 
+async function fetchAndCacheNextSeason(nextSeasonCacheKey: string) {
+  const items = await getNextSeason();
+
+  const results = await Promise.allSettled(
+    items.map(async (item) => {
+      const weekday = getWeekday(item);
+      const bangumiMatch = await searchAnimeSubject(item.title.native);
+      return {
+        ...item,
+        weekday,
+        nameCn: bangumiMatch?.name_cn ?? null,
+        bangumiId: bangumiMatch?.id ?? null,
+      } as SeasonEntry;
+    }),
+  );
+
+  const enriched = results
+    .filter((r): r is PromiseFulfilledResult<SeasonEntry> => r.status === "fulfilled")
+    .map((r) => r.value)
+    .filter((e) => !isAired(e));
+
+  const resolved = await applyCachedSubjectCovers(enriched);
+  await writeCachedValue(nextSeasonCacheKey, resolved.entries);
+  return resolved.entries;
+}
+
 export default function NextSeasonPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const filterText = searchParams.get("filter") ?? "";
   const filterWeekday = searchParams.get("weekday") ?? "";
@@ -140,46 +168,32 @@ export default function NextSeasonPage() {
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const isFiltering = filterText !== "" || filterWeekday !== "";
   const nextSeasonCacheKey = getNextSeasonCacheKey();
+  const nextSeasonQueryKey = ["next-season", seasonLabel] as const;
 
   const { data: rawEntries, isLoading, error } = useQuery({
-    queryKey: ["next-season", seasonLabel],
+    queryKey: nextSeasonQueryKey,
     queryFn: async () => {
       await deleteCachedValuesByPrefixExcept(NEXT_SEASON_CACHE_PREFIX, nextSeasonCacheKey);
 
-      const cached = await readCachedValueWithin<SeasonEntry[]>(
-        nextSeasonCacheKey,
-        NEXT_SEASON_CACHE_TTL,
-      );
+      const cached = await readCachedValueEntry<SeasonEntry[]>(nextSeasonCacheKey);
       if (cached) {
-        const resolved = await applyCachedSubjectCovers(cached);
-        if (resolved.changed) await writeCachedValue(nextSeasonCacheKey, resolved.entries);
+        const stale = isCacheStale(cached.updatedAt, NEXT_SEASON_CACHE_TTL);
+        const resolved = await applyCachedSubjectCovers(cached.payload);
+        if (resolved.changed && !stale) await writeCachedValue(nextSeasonCacheKey, resolved.entries);
+        if (stale) {
+          refreshQueryDataIfChanged({
+            queryClient,
+            queryKey: nextSeasonQueryKey,
+            refreshKey: nextSeasonCacheKey,
+            currentData: resolved.entries,
+            refresh: () => fetchAndCacheNextSeason(nextSeasonCacheKey),
+          });
+        }
         return resolved.entries;
       }
 
       try {
-        const items = await getNextSeason();
-
-        const results = await Promise.allSettled(
-          items.map(async (item) => {
-            const weekday = getWeekday(item);
-            const bangumiMatch = await searchAnimeSubject(item.title.native);
-            return {
-              ...item,
-              weekday,
-              nameCn: bangumiMatch?.name_cn ?? null,
-              bangumiId: bangumiMatch?.id ?? null,
-            } as SeasonEntry;
-          }),
-        );
-
-        const enriched = results
-          .filter((r): r is PromiseFulfilledResult<SeasonEntry> => r.status === "fulfilled")
-          .map((r) => r.value)
-          .filter((e) => !isAired(e));
-
-        const resolved = await applyCachedSubjectCovers(enriched);
-        await writeCachedValue(nextSeasonCacheKey, resolved.entries);
-        return resolved.entries;
+        return await fetchAndCacheNextSeason(nextSeasonCacheKey);
       } catch (err) {
         const fallback = await readCachedValueWithLegacy<SeasonEntry[]>(
           nextSeasonCacheKey,
@@ -193,10 +207,10 @@ export default function NextSeasonPage() {
         throw err;
       }
     },
-    staleTime: NEXT_SEASON_CACHE_TTL,
+    staleTime: 0,
   });
 
-  const entries = rawEntries ?? [];
+  const entries = useMemo(() => rawEntries ?? [], [rawEntries]);
 
   // Group by weekday
   const groups = useMemo(() => {
@@ -224,7 +238,7 @@ export default function NextSeasonPage() {
     if (entries.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentDay(earliestEntryDay(entries));
-  }, [entries.length]);
+  }, [entries]);
 
   // Filtered items (grouped by weekday, TBA last)
   const filteredGroups = useMemo(() => {
