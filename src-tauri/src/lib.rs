@@ -606,9 +606,14 @@ fn updater_builder() -> tauri_plugin_updater::Builder {
     if detect_distribution_kind() == "installer" {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
-                // NSIS uses /D= as the target install directory. Updater builder
-                // args are appended after config args, keeping /D= last.
-                builder = builder.installer_arg(format!("/D={}", dir.display()));
+                let dir_str = dir.display().to_string();
+
+                // Detect installer type by checking the updater artifact
+                // For now, support both MSI and NSIS formats
+                // MSI uses INSTALLDIR property, NSIS uses /D= parameter
+                builder = builder
+                    .installer_arg(format!("INSTALLDIR={}", dir_str))  // MSI format
+                    .installer_arg(format!("/D={}", dir_str));          // NSIS format (must be last)
             }
         }
     }
