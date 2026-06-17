@@ -83,17 +83,20 @@ export async function searchSubjects(params: {
   limit?: number;
   offset?: number;
 }): Promise<SearchResponse> {
+  const searchParams = new URLSearchParams();
+  searchParams.set("limit", String(params.limit ?? 30));
+  searchParams.set("offset", String(params.offset ?? 0));
+
   const body: Record<string, unknown> = {
     keyword: params.keyword,
     sort: params.sort || "rank",
-    limit: params.limit || 30,
   };
 
   if (params.type && params.type.length > 0) {
     body.filter = { type: params.type };
   }
 
-  return request<SearchResponse>("/v0/search/subjects", {
+  return request<SearchResponse>(`/v0/search/subjects?${searchParams.toString()}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
