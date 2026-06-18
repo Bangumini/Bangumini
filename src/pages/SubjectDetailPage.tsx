@@ -828,7 +828,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
               src={subject.images.large}
               alt=""
               loading="eager"
-              className="w-full rounded-card border border-line"
+              className="max-h-82 rounded-card border border-line self-center"
             />
           )}
 
