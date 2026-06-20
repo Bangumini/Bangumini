@@ -51,6 +51,12 @@ type CollectionsLocationState = {
   page?: number;
   focusedIndex?: number;
 };
+type CommittedCollectionsState = {
+  scopeKey: string;
+  version: string;
+  sorted: UserCollection[];
+  displayLabelMap: Map<number, string | null>;
+};
 
 function getPageStateKey(collectionType: string, searchText: string) {
   return `bangumini-collections-page-${collectionType}-${searchText}`;
@@ -257,6 +263,7 @@ export default function CollectionsPage() {
   const [page, setPage] = useState(initialState.page);
   const [focusedIndex, setFocusedIndex] = useState(initialState.focusedIndex);
   const [todayDateKey, setTodayDateKey] = useState(() => getLocalDateString());
+  const [committedState, setCommittedState] = useState<CommittedCollectionsState | null>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const isWatching = collectionType === "3";
   const today = useMemo(() => getBangumiWeekdayFromDateKey(todayDateKey), [todayDateKey]);
@@ -304,7 +311,7 @@ export default function CollectionsPage() {
   const collectionsCacheKey = `${COLLECTIONS_CACHE_PREFIX}${collectionType}-${uname}`;
   const collectionsQueryKey = ["collections", collectionType, uname] as const;
 
-  const { data: collData, isLoading, error } = useQuery({
+  const { data: collData, isLoading, error, dataUpdatedAt: collUpdatedAt } = useQuery({
     queryKey: collectionsQueryKey,
     queryFn: async () => {
       if (!uname) return { data: [], total: 0 };
@@ -339,7 +346,7 @@ export default function CollectionsPage() {
     staleTime: 0,
   });
 
-  const { data: calendar, error: calError } = useQuery({
+  const { data: calendar, error: calError, dataUpdatedAt: calendarUpdatedAt } = useQuery({
     queryKey: CALENDAR_QUERY_KEY,
     queryFn: async () => {
       const cached = await readCachedValueEntry<CalendarItem[]>("calendar");
@@ -405,7 +412,11 @@ export default function CollectionsPage() {
   const airingTimeTargetKey = airingTimeTargets.map((item) => item.subjectId).join(",");
 
   const shouldLoadAiringTimes = isWatching && airingTimeTargets.length > 0;
-  const { data: airingTimeMapData } = useQuery({
+  const {
+    data: airingTimeMapData,
+    error: airingTimeError,
+    dataUpdatedAt: airingTimeUpdatedAt,
+  } = useQuery({
     queryKey: ["anilist-airing-times", airingTimeTargetKey],
     queryFn: async () => {
       const map = new Map<number, AiringTime>();
@@ -458,7 +469,11 @@ export default function CollectionsPage() {
     .join(",");
   const episodesQueryKey = ["episodes", todayDateKey, airingIds.join(","), airingTimeSignature];
 
-  const { data: episodeMap } = useQuery({
+  const {
+    data: episodeMap,
+    error: episodeError,
+    dataUpdatedAt: episodeUpdatedAt,
+  } = useQuery({
     queryKey: episodesQueryKey,
     queryFn: async () => {
       if (airingIds.length === 0) return new Map<number, number>();
@@ -554,7 +569,6 @@ export default function CollectionsPage() {
     return rawCollections;
   }, [rawCollections, calendar, isWatching, today, airedEpMap]);
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / LIMIT));
   const displayLabelMap = useMemo(() => {
     const map = new Map<number, string | null>();
     for (const item of sorted) {
@@ -563,8 +577,56 @@ export default function CollectionsPage() {
     return map;
   }, [sorted, airingMap, airedEpMap, today, airingTimeMap]);
 
+  const committedScopeKey = `${uname ?? ""}:${collectionType}`;
+  const shouldWaitForCalendar = isWatching;
+  const shouldWaitForAiringTimes = shouldLoadAiringTimes;
+  const shouldWaitForEpisodes = isWatching && rawCollections.length > 0 && airingIds.length > 0;
+  const isDisplayReady = Boolean(uname)
+    && collData !== undefined
+    && (!shouldWaitForCalendar || calendar !== undefined || Boolean(calError))
+    && (!shouldWaitForAiringTimes || airingTimeMapData !== undefined || Boolean(airingTimeError))
+    && (!shouldWaitForEpisodes || episodeMap !== undefined || Boolean(episodeError));
+  const committedVersion = [
+    committedScopeKey,
+    todayDateKey,
+    collUpdatedAt || "pending",
+    shouldWaitForCalendar
+      ? (calendar !== undefined ? calendarUpdatedAt : (calError ? "error" : "pending"))
+      : "skip",
+    shouldWaitForAiringTimes
+      ? (airingTimeMapData !== undefined ? airingTimeUpdatedAt : (airingTimeError ? "error" : "pending"))
+      : "skip",
+    shouldWaitForEpisodes
+      ? (episodeMap !== undefined ? episodeUpdatedAt : (episodeError ? "error" : "pending"))
+      : "skip",
+  ].join("|");
+
+  useEffect(() => {
+    if (!uname) {
+      setCommittedState(null);
+      return;
+    }
+    if (!isDisplayReady) return;
+
+    setCommittedState((prev) => {
+      if (prev?.version === committedVersion && prev.scopeKey === committedScopeKey) {
+        return prev;
+      }
+      return {
+        scopeKey: committedScopeKey,
+        version: committedVersion,
+        sorted,
+        displayLabelMap,
+      };
+    });
+  }, [committedScopeKey, committedVersion, displayLabelMap, isDisplayReady, sorted, uname]);
+
+  const activeCommittedState = committedState?.scopeKey === committedScopeKey ? committedState : null;
+  const visibleSorted = activeCommittedState?.sorted ?? EMPTY_COLLECTIONS;
+  const visibleDisplayLabelMap = activeCommittedState?.displayLabelMap ?? new Map<number, string | null>();
+
   const filtered = searchText
-    ? sorted.filter((item) => {
+    ? visibleSorted.filter((item) => {
         const kw = buildSubjectKeywords(item.subject.name_cn, item.subject.name);
         const lower = searchText.toLowerCase();
         return (
@@ -573,7 +635,10 @@ export default function CollectionsPage() {
           kw.some((k) => k.toLowerCase().includes(lower))
         );
       })
-    : sorted;
+    : visibleSorted;
+
+  const totalPages = Math.max(1, Math.ceil(visibleSorted.length / LIMIT));
+  const isCommittedLoading = Boolean(uname) && !activeCommittedState && !error;
 
   const paged = filtered.slice((page - 1) * LIMIT, page * LIMIT);
 
@@ -723,7 +788,7 @@ export default function CollectionsPage() {
         <span>
           {searchText
             ? `搜索 · 共 ${filtered.length} 条`
-            : `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条`}
+            : `第 ${page} / ${totalPages} 页 · 共 ${visibleSorted.length} 条`}
         </span>
       </div>
 
@@ -733,13 +798,13 @@ export default function CollectionsPage() {
         {error && collData && <p className="text-fg-tertiary text-[12px] mb-2 px-1">收藏加载失败，显示缓存数据</p>}
         {calError && !calendar && <p className="text-danger text-[13px] mb-2 px-1">日历加载出错: {String(calError)}</p>}
         {calError && calendar && <p className="text-fg-tertiary text-[12px] mb-2 px-1">日历加载失败，显示缓存数据</p>}
-        {isLoading && <p className="text-fg-tertiary text-[13px] px-1">加载中…</p>}
+        {isCommittedLoading && <p className="text-fg-tertiary text-[13px] px-1">加载中…</p>}
         {!uname && !isLoading && <p className="text-fg-tertiary text-[13px] px-1">正在获取用户信息…</p>}
 
         <div className="space-y-0.5">
           {paged.map((item, index) => {
             const s = item.subject;
-            const label = isWatching ? displayLabelMap.get(item.subject_id) ?? null : null;
+            const label = isWatching ? visibleDisplayLabelMap.get(item.subject_id) ?? null : null;
             const weekday = s.air_weekday ? WEEKDAY_CN[s.air_weekday] : undefined;
             return (
               <SubjectRow
