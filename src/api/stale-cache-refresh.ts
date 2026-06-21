@@ -26,18 +26,21 @@ export function refreshQueryDataIfChanged<T>({
   refreshKey: string;
   currentData: T;
   refresh: () => Promise<T>;
-}) {
-  if (refreshInFlight.has(refreshKey)) return;
+}): Promise<boolean> | null {
+  if (refreshInFlight.has(refreshKey)) return null;
   refreshInFlight.add(refreshKey);
 
-  void refresh()
+  return refresh()
     .then((nextData) => {
       if (!isSamePayload(currentData, nextData)) {
         queryClient.setQueryData<T>(queryKey, nextData);
+        return true;
       }
+      return false;
     })
     .catch((error) => {
       console.warn("[stale-cache-refresh] background refresh failed", error);
+      return false;
     })
     .finally(() => {
       refreshInFlight.delete(refreshKey);

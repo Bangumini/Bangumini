@@ -36,8 +36,13 @@ const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
 const EPISODES_CACHE_MAX_AGE = 1000 * 60 * 30;
 const EMPTY_COLLECTIONS: UserCollection[] = [];
 const EMPTY_EPISODE_MAP = new Map<number, number>();
+const EMPTY_DISPLAY_LABEL_MAP = new Map<number, string | null>();
 const CALENDAR_QUERY_KEY = ["calendar"] as const;
 
+type DataSource = "cache" | "network";
+type QuerySourceName = "collections" | "calendar" | "airingTimes" | "episodes";
+type QuerySourceStatus = DataSource | "pending" | "error" | "skip";
+type QuerySourceState = Partial<Record<QuerySourceName, { key: string; source: DataSource }>>;
 type AiringTime = { airingAt: number; episode: number };
 type EpisodeCountCache = {
   airedEp: number;
@@ -54,6 +59,7 @@ type CollectionsLocationState = {
 type CommittedCollectionsState = {
   scopeKey: string;
   version: string;
+  source: DataSource;
   sorted: UserCollection[];
   displayLabelMap: Map<number, string | null>;
 };
@@ -83,6 +89,38 @@ function writePageState(collectionType: string, searchText: string, page: number
   );
 }
 
+function buildAiringMap(calendar: CalendarItem[] | undefined) {
+  const map = new Map<number, number>();
+  if (!calendar) return map;
+
+  for (const day of calendar) {
+    for (const item of day.items) {
+      map.set(item.id, day.weekday.id);
+    }
+  }
+  return map;
+}
+
+function getQuerySourceStatus(
+  sources: QuerySourceState,
+  name: QuerySourceName,
+  key: string,
+  enabled: boolean,
+  hasData: boolean,
+  hasError: boolean,
+): QuerySourceStatus {
+  if (!enabled) return "skip";
+  if (hasError && !hasData) return "error";
+
+  const entry = sources[name];
+  if (entry?.key === key) return entry.source;
+  return hasData ? "cache" : "pending";
+}
+
+function hasNetworkSource(sources: QuerySourceStatus[]) {
+  return sources.some((source) => source === "network");
+}
+
 function readLegacyAiringCache(subjectId: number): AiringTime | null {
   try {
     const raw = localStorage.getItem(`bangumini-anilist-${subjectId}`);
@@ -100,6 +138,10 @@ function readLegacyAiringCache(subjectId: number): AiringTime | null {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getCurrentTimestamp() {
+  return Date.now();
 }
 
 function getLocalDateString(date = new Date()) {
@@ -264,12 +306,42 @@ export default function CollectionsPage() {
   const [focusedIndex, setFocusedIndex] = useState(initialState.focusedIndex);
   const [todayDateKey, setTodayDateKey] = useState(() => getLocalDateString());
   const [committedState, setCommittedState] = useState<CommittedCollectionsState | null>(null);
+  const [querySources, setQuerySources] = useState<QuerySourceState>({});
+  const [backgroundRefreshCount, setBackgroundRefreshCount] = useState(0);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const isWatching = collectionType === "3";
   const today = useMemo(() => getBangumiWeekdayFromDateKey(todayDateKey), [todayDateKey]);
   const isReturningFromDetail = useRef(initialState.isReturningFromDetail);
+  const isMounted = useRef(true);
 
   const uname = getUsername();
+
+  function setQuerySource(name: QuerySourceName, key: string, source: DataSource) {
+    if (!isMounted.current) return;
+    setQuerySources((prev) => {
+      const current = prev[name];
+      if (current?.key === key && current.source === source) return prev;
+      return { ...prev, [name]: { key, source } };
+    });
+  }
+
+  function trackBackgroundRefresh(task: Promise<boolean> | null) {
+    if (!task) return;
+    if (isMounted.current) {
+      setBackgroundRefreshCount((count) => count + 1);
+    }
+    void task.finally(() => {
+      if (!isMounted.current) return;
+      setBackgroundRefreshCount((count) => Math.max(0, count - 1));
+    });
+  }
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const syncTodayDateKey = () => setTodayDateKey(getLocalDateString());
@@ -311,7 +383,13 @@ export default function CollectionsPage() {
   const collectionsCacheKey = `${COLLECTIONS_CACHE_PREFIX}${collectionType}-${uname}`;
   const collectionsQueryKey = ["collections", collectionType, uname] as const;
 
-  const { data: collData, isLoading, error, dataUpdatedAt: collUpdatedAt } = useQuery({
+  const {
+    data: collData,
+    isLoading,
+    error,
+    dataUpdatedAt: collUpdatedAt,
+    isFetching: isCollectionsFetching,
+  } = useQuery({
     queryKey: collectionsQueryKey,
     queryFn: async () => {
       if (!uname) return { data: [], total: 0 };
@@ -319,26 +397,36 @@ export default function CollectionsPage() {
       const legacyCollections = () => readLegacyHttpCache<PagedResponse<UserCollection>>(`collections-${collectionType}-${uname}`);
       const cached = await readCachedValueEntry<PagedResponse<UserCollection>>(collectionsCacheKey);
       if (cached) {
+        setQuerySource("collections", collectionsCacheKey, "cache");
         if (isCacheStale(cached.updatedAt, QUERY_CACHE_MAX_AGE)) {
-          refreshQueryDataIfChanged({
+          const refreshTask = refreshQueryDataIfChanged({
             queryClient,
             queryKey: collectionsQueryKey,
             refreshKey: collectionsCacheKey,
             currentData: cached.payload,
             refresh: () => fetchAndCacheCollections(collectionType, uname, collectionsCacheKey),
           });
+          trackBackgroundRefresh(refreshTask?.then((changed) => {
+            if (changed) setQuerySource("collections", collectionsCacheKey, "network");
+            return changed;
+          }) ?? null);
         }
         return cached.payload;
       }
 
       try {
-        return await fetchAndCacheCollections(collectionType, uname, collectionsCacheKey);
+        const result = await fetchAndCacheCollections(collectionType, uname, collectionsCacheKey);
+        setQuerySource("collections", collectionsCacheKey, "network");
+        return result;
       } catch (err) {
         const fallback = await readCachedValueWithLegacy<PagedResponse<UserCollection>>(
           collectionsCacheKey,
           legacyCollections,
         );
-        if (fallback) return fallback;
+        if (fallback) {
+          setQuerySource("collections", collectionsCacheKey, "cache");
+          return fallback;
+        }
         throw err;
       }
     },
@@ -346,31 +434,46 @@ export default function CollectionsPage() {
     staleTime: 0,
   });
 
-  const { data: calendar, error: calError, dataUpdatedAt: calendarUpdatedAt } = useQuery({
+  const {
+    data: calendar,
+    error: calError,
+    dataUpdatedAt: calendarUpdatedAt,
+    isFetching: isCalendarFetching,
+  } = useQuery({
     queryKey: CALENDAR_QUERY_KEY,
     queryFn: async () => {
       const cached = await readCachedValueEntry<CalendarItem[]>("calendar");
       if (cached) {
+        setQuerySource("calendar", "calendar", "cache");
         if (isCacheStale(cached.updatedAt, QUERY_CACHE_MAX_AGE)) {
-          refreshQueryDataIfChanged({
+          const refreshTask = refreshQueryDataIfChanged({
             queryClient,
             queryKey: CALENDAR_QUERY_KEY,
             refreshKey: "calendar",
             currentData: cached.payload,
             refresh: fetchAndCacheCalendar,
           });
+          trackBackgroundRefresh(refreshTask?.then((changed) => {
+            if (changed) setQuerySource("calendar", "calendar", "network");
+            return changed;
+          }) ?? null);
         }
         return cached.payload;
       }
 
       try {
-        return await fetchAndCacheCalendar();
+        const result = await fetchAndCacheCalendar();
+        setQuerySource("calendar", "calendar", "network");
+        return result;
       } catch (err) {
         const fallback = await readCachedValueWithLegacy<CalendarItem[]>(
           "calendar",
           () => readLegacyHttpCache<CalendarItem[]>("calendar"),
         );
-        if (fallback) return fallback;
+        if (fallback) {
+          setQuerySource("calendar", "calendar", "cache");
+          return fallback;
+        }
         throw err;
       }
     },
@@ -380,17 +483,7 @@ export default function CollectionsPage() {
 
   const rawCollections = collData?.data ?? EMPTY_COLLECTIONS;
 
-  const airingMap = useMemo(() => {
-    const map = new Map<number, number>();
-    if (calendar) {
-      for (const day of calendar) {
-        for (const item of day.items) {
-          map.set(item.id, day.weekday.id);
-        }
-      }
-    }
-    return map;
-  }, [calendar]);
+  const airingMap = useMemo(() => buildAiringMap(calendar), [calendar]);
 
   const airingIds = useMemo(
     () => rawCollections
@@ -416,11 +509,13 @@ export default function CollectionsPage() {
     data: airingTimeMapData,
     error: airingTimeError,
     dataUpdatedAt: airingTimeUpdatedAt,
+    isFetching: isAiringTimeFetching,
   } = useQuery({
     queryKey: ["anilist-airing-times", airingTimeTargetKey],
     queryFn: async () => {
       const map = new Map<number, AiringTime>();
       const staleBySubjectId = new Map<number, AiringTime>();
+      let loadedFromNetwork = false;
 
       for (const item of airingTimeTargets) {
         const cacheKey = `${AIRING_CACHE_PREFIX}${item.subjectId}`;
@@ -444,6 +539,7 @@ export default function CollectionsPage() {
       for (const [index, item] of missing.entries()) {
         if (index > 0) await delay(AIRING_REQUEST_DELAY);
         if (!item.name) continue;
+        loadedFromNetwork = true;
         const result = await getAiringAt(item.name);
         if (result) {
           await writeCachedValue(`${AIRING_CACHE_PREFIX}${item.subjectId}`, result);
@@ -454,6 +550,7 @@ export default function CollectionsPage() {
         }
       }
 
+      setQuerySource("airingTimes", airingTimeTargetKey, loadedFromNetwork ? "network" : "cache");
       return map;
     },
     enabled: shouldLoadAiringTimes,
@@ -468,17 +565,20 @@ export default function CollectionsPage() {
     })
     .join(",");
   const episodesQueryKey = ["episodes", todayDateKey, airingIds.join(","), airingTimeSignature];
+  const episodesQuerySourceKey = `${todayDateKey}|${airingIds.join(",")}|${airingTimeSignature}`;
+  const shouldLoadEpisodes = isWatching && rawCollections.length > 0 && airingIds.length > 0;
 
   const {
     data: episodeMap,
     error: episodeError,
     dataUpdatedAt: episodeUpdatedAt,
+    isFetching: isEpisodeFetching,
   } = useQuery({
     queryKey: episodesQueryKey,
     queryFn: async () => {
       if (airingIds.length === 0) return new Map<number, number>();
 
-      const now = Date.now();
+      const now = getCurrentTimestamp();
       const map = new Map<number, number>();
       const cachedBySubjectId = new Map<number, EpisodeCountCache>();
       const idsToFetch: number[] = [];
@@ -504,6 +604,7 @@ export default function CollectionsPage() {
         idsToFetch.push(id);
       }
 
+      const loadedFromNetwork = idsToFetch.length > 0;
       const results = await Promise.allSettled(
         idsToFetch.map((id) => fetchAiredEpisodeCount(id, todayDateKey).then((airedEp) => ({ id, airedEp }))),
       );
@@ -513,7 +614,7 @@ export default function CollectionsPage() {
         const id = idsToFetch[index];
         if (result.status === "fulfilled") {
           const { airedEp } = result.value;
-          const checkedAt = Date.now();
+          const checkedAt = getCurrentTimestamp();
           const currentAiringMinuteOfDay = (() => {
             const airingTime = airingTimeMap.get(id);
             return airingTime ? getAiringMinuteOfDay(airingTime.airingAt) : null;
@@ -531,9 +632,10 @@ export default function CollectionsPage() {
         if (cached) map.set(id, cached.airedEp);
       }
 
+      setQuerySource("episodes", episodesQuerySourceKey, loadedFromNetwork ? "network" : "cache");
       return map;
     },
-    enabled: isWatching && rawCollections.length > 0 && airingIds.length > 0,
+    enabled: shouldLoadEpisodes,
     staleTime: EPISODES_CACHE_MAX_AGE,
     refetchOnWindowFocus: "always",
   });
@@ -580,50 +682,152 @@ export default function CollectionsPage() {
   const committedScopeKey = `${uname ?? ""}:${collectionType}`;
   const shouldWaitForCalendar = isWatching;
   const shouldWaitForAiringTimes = shouldLoadAiringTimes;
-  const shouldWaitForEpisodes = isWatching && rawCollections.length > 0 && airingIds.length > 0;
-  const isDisplayReady = Boolean(uname)
+  const shouldWaitForEpisodes = shouldLoadEpisodes;
+  const collectionsSource = getQuerySourceStatus(
+    querySources,
+    "collections",
+    collectionsCacheKey,
+    Boolean(uname),
+    collData !== undefined,
+    Boolean(error),
+  );
+  const calendarSource = getQuerySourceStatus(
+    querySources,
+    "calendar",
+    "calendar",
+    shouldWaitForCalendar,
+    calendar !== undefined,
+    Boolean(calError),
+  );
+  const airingTimesSource = getQuerySourceStatus(
+    querySources,
+    "airingTimes",
+    airingTimeTargetKey,
+    shouldWaitForAiringTimes,
+    airingTimeMapData !== undefined,
+    Boolean(airingTimeError),
+  );
+  const episodesSource = getQuerySourceStatus(
+    querySources,
+    "episodes",
+    episodesQuerySourceKey,
+    shouldWaitForEpisodes,
+    episodeMap !== undefined,
+    Boolean(episodeError),
+  );
+  const cacheCalendar = calendarSource === "cache" ? calendar : undefined;
+  const cacheAiringMap = useMemo(() => buildAiringMap(cacheCalendar), [cacheCalendar]);
+  const cacheAiringTimeMap = airingTimesSource === "cache" ? airingTimeMap : EMPTY_AIRING_TIME_MAP;
+  const cacheAiredEpMap = episodesSource === "cache" ? airedEpMap : EMPTY_EPISODE_MAP;
+  const cacheSorted = useMemo(() => {
+    if (isWatching && cacheCalendar) {
+      return sortCollections(rawCollections, cacheCalendar, today, cacheAiredEpMap);
+    }
+    return rawCollections;
+  }, [rawCollections, cacheCalendar, isWatching, today, cacheAiredEpMap]);
+  const cacheDisplayLabelMap = useMemo(() => {
+    const map = new Map<number, string | null>();
+    for (const item of cacheSorted) {
+      map.set(item.subject_id, getDisplayLabel(item, cacheAiringMap, cacheAiredEpMap, today, cacheAiringTimeMap));
+    }
+    return map;
+  }, [cacheSorted, cacheAiringMap, cacheAiredEpMap, today, cacheAiringTimeMap]);
+  const isDisplayDataAvailable = Boolean(uname)
     && collData !== undefined
     && (!shouldWaitForCalendar || calendar !== undefined || Boolean(calError))
     && (!shouldWaitForAiringTimes || airingTimeMapData !== undefined || Boolean(airingTimeError))
     && (!shouldWaitForEpisodes || episodeMap !== undefined || Boolean(episodeError));
+  const isDisplayNetworkIdle = backgroundRefreshCount === 0
+    && !isCollectionsFetching
+    && (!shouldWaitForCalendar || !isCalendarFetching)
+    && (!shouldWaitForAiringTimes || !isAiringTimeFetching)
+    && (!shouldWaitForEpisodes || !isEpisodeFetching);
+  const isDisplayReady = Boolean(uname)
+    && isDisplayDataAvailable
+    && isDisplayNetworkIdle;
+  const canCommitCacheSnapshot = Boolean(uname)
+    && collData !== undefined
+    && collectionsSource === "cache";
+  const committedSource: DataSource = hasNetworkSource([
+    collectionsSource,
+    shouldWaitForCalendar ? calendarSource : "skip",
+    shouldWaitForAiringTimes ? airingTimesSource : "skip",
+    shouldWaitForEpisodes ? episodesSource : "skip",
+  ])
+    ? "network"
+    : "cache";
+  const cacheCommittedVersion = [
+    committedScopeKey,
+    todayDateKey,
+    "cache",
+    collUpdatedAt || "pending",
+    calendarSource === "cache" ? calendarUpdatedAt : "skip",
+    airingTimesSource === "cache" ? airingTimeUpdatedAt : "skip",
+    episodesSource === "cache" ? episodeUpdatedAt : "skip",
+  ].join("|");
   const committedVersion = [
     committedScopeKey,
     todayDateKey,
+    committedSource,
+    collectionsSource,
     collUpdatedAt || "pending",
     shouldWaitForCalendar
-      ? (calendar !== undefined ? calendarUpdatedAt : (calError ? "error" : "pending"))
+      ? `${calendarSource}:${calendar !== undefined ? calendarUpdatedAt : (calError ? "error" : "pending")}`
       : "skip",
     shouldWaitForAiringTimes
-      ? (airingTimeMapData !== undefined ? airingTimeUpdatedAt : (airingTimeError ? "error" : "pending"))
+      ? `${airingTimesSource}:${airingTimeMapData !== undefined ? airingTimeUpdatedAt : (airingTimeError ? "error" : "pending")}`
       : "skip",
     shouldWaitForEpisodes
-      ? (episodeMap !== undefined ? episodeUpdatedAt : (episodeError ? "error" : "pending"))
+      ? `${episodesSource}:${episodeMap !== undefined ? episodeUpdatedAt : (episodeError ? "error" : "pending")}`
       : "skip",
   ].join("|");
 
   useEffect(() => {
     if (!uname) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCommittedState(null);
       return;
     }
-    if (!isDisplayReady) return;
+    if (!isDisplayReady && !canCommitCacheSnapshot) return;
+
+    const shouldCommitSettledSnapshot = isDisplayReady;
+    const nextVersion = shouldCommitSettledSnapshot ? committedVersion : cacheCommittedVersion;
+    const nextSource = shouldCommitSettledSnapshot ? committedSource : "cache";
+    const nextSorted = shouldCommitSettledSnapshot ? sorted : cacheSorted;
+    const nextDisplayLabelMap = shouldCommitSettledSnapshot ? displayLabelMap : cacheDisplayLabelMap;
 
     setCommittedState((prev) => {
-      if (prev?.version === committedVersion && prev.scopeKey === committedScopeKey) {
+      if (!shouldCommitSettledSnapshot && prev?.scopeKey === committedScopeKey) {
+        return prev;
+      }
+      if (prev?.version === nextVersion && prev.scopeKey === committedScopeKey) {
         return prev;
       }
       return {
         scopeKey: committedScopeKey,
-        version: committedVersion,
-        sorted,
-        displayLabelMap,
+        version: nextVersion,
+        source: nextSource,
+        sorted: nextSorted,
+        displayLabelMap: nextDisplayLabelMap,
       };
     });
-  }, [committedScopeKey, committedVersion, displayLabelMap, isDisplayReady, sorted, uname]);
+  }, [
+    cacheCommittedVersion,
+    cacheDisplayLabelMap,
+    cacheSorted,
+    canCommitCacheSnapshot,
+    committedScopeKey,
+    committedSource,
+    committedVersion,
+    displayLabelMap,
+    isDisplayReady,
+    sorted,
+    uname,
+  ]);
 
   const activeCommittedState = committedState?.scopeKey === committedScopeKey ? committedState : null;
   const visibleSorted = activeCommittedState?.sorted ?? EMPTY_COLLECTIONS;
-  const visibleDisplayLabelMap = activeCommittedState?.displayLabelMap ?? new Map<number, string | null>();
+  const visibleDisplayLabelMap = activeCommittedState?.displayLabelMap ?? EMPTY_DISPLAY_LABEL_MAP;
 
   const filtered = searchText
     ? visibleSorted.filter((item) => {
