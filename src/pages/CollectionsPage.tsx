@@ -718,12 +718,44 @@ export default function CollectionsPage() {
     return () => window.clearTimeout(timer);
   }, [isWatching, airingMap, airingTimeMap, queryClient]);
 
+  // Auto-refresh sorting when today's episode airing time passes
+  useEffect(() => {
+    if (!isWatching) return;
+
+    const now = Date.now() / 1000; // Current time in seconds
+    const todayAiringTimes: number[] = [];
+
+    // Find all airing times for today's episodes that haven't aired yet
+    [...airingMap].forEach(([subjectId, weekday]) => {
+      if (weekday === today) {
+        const airingTime = airingTimeMap.get(subjectId);
+        if (airingTime && airingTime.airingAt > now) {
+          todayAiringTimes.push(airingTime.airingAt);
+        }
+      }
+    });
+
+    if (todayAiringTimes.length === 0) return;
+
+    // Find the next airing time
+    const nextAiringAt = Math.min(...todayAiringTimes);
+    const delayMs = Math.max(1000, (nextAiringAt - now) * 1000 + 1000);
+
+    const timer = window.setTimeout(() => {
+      // Force re-render by invalidating episodes query
+      // This will cause the sorting to recalculate with updated airing time check
+      queryClient.invalidateQueries({ queryKey: ["episodes"] });
+    }, delayMs);
+
+    return () => window.clearTimeout(timer);
+  }, [isWatching, airingMap, airingTimeMap, today, queryClient]);
+
   const sorted = useMemo(() => {
     if (isWatching && calendar) {
-      return sortCollections(rawCollections, calendar, today, airedEpMap);
+      return sortCollections(rawCollections, calendar, today, airedEpMap, airingTimeMap);
     }
     return rawCollections;
-  }, [rawCollections, calendar, isWatching, today, airedEpMap]);
+  }, [rawCollections, calendar, isWatching, today, airedEpMap, airingTimeMap]);
 
   const displayLabelMap = useMemo(() => {
     const map = new Map<number, string | null>();
@@ -775,10 +807,10 @@ export default function CollectionsPage() {
   const cacheAiredEpMap = episodesSource === "cache" ? airedEpMap : EMPTY_EPISODE_MAP;
   const cacheSorted = useMemo(() => {
     if (isWatching && cacheCalendar) {
-      return sortCollections(rawCollections, cacheCalendar, today, cacheAiredEpMap);
+      return sortCollections(rawCollections, cacheCalendar, today, cacheAiredEpMap, cacheAiringTimeMap);
     }
     return rawCollections;
-  }, [rawCollections, cacheCalendar, isWatching, today, cacheAiredEpMap]);
+  }, [rawCollections, cacheCalendar, isWatching, today, cacheAiredEpMap, cacheAiringTimeMap]);
   const cacheDisplayLabelMap = useMemo(() => {
     const map = new Map<number, string | null>();
     for (const item of cacheSorted) {

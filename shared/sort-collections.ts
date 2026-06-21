@@ -26,19 +26,38 @@ export function getCollectionMeta(
   airingMap: Map<number, number>,
   airedEpMap: Map<number, number>,
   today: number,
+  airingTimeMap?: Map<number, { airingAt: number; episode: number }>,
 ): CollectionMeta {
   const weekday = airingMap.get(c.subject_id) ?? c.subject.air_weekday ?? 0;
   const isAiring = airingMap.has(c.subject_id);
   const totalEp = getTotalEp(c);
-  const knownAiredEp = isAiring ? airedEpMap.get(c.subject_id) : totalEp;
+  let knownAiredEp = isAiring ? airedEpMap.get(c.subject_id) : totalEp;
+
   const airedEp = knownAiredEp ?? Math.max(1, c.ep_status);
+
+  // Check if today's episode has actually aired yet
+  let effectiveAiredEp = airedEp;
+  if (isAiring && weekday === today && airingTimeMap) {
+    const airingTime = airingTimeMap.get(c.subject_id);
+    if (airingTime) {
+      // Extract time-of-day from the stored airing time (assuming weekly same-time schedule)
+      const airingDate = new Date(airingTime.airingAt * 1000);
+      const airingMinutes = airingDate.getHours() * 60 + airingDate.getMinutes();
+
+      const now = new Date();
+      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+      if (nowMinutes < airingMinutes) {
+        // Current time hasn't reached today's airing time yet
+        effectiveAiredEp = Math.max(0, airedEp - 1);
+      }
+    }
+  }
 
   let group: SortedGroup;
   if (!isAiring && c.ep_status === 0) {
     group = "finished";
-  } else if (isAiring && weekday === today && c.ep_status > 0 && c.ep_status >= airedEp - 1) {
-    group = "airing_caught";
-  } else if (isAiring && c.ep_status < airedEp) {
+  } else if (isAiring && c.ep_status < effectiveAiredEp) {
     group = "airing_not_caught";
   } else if (isAiring) {
     group = "airing_caught";
@@ -54,6 +73,7 @@ export function sortCollections(
   calendar: CalendarItem[],
   today: number,
   airedEpMap: Map<number, number>,
+  airingTimeMap?: Map<number, { airingAt: number; episode: number }>,
 ): UserCollection[] {
   const airingMap = new Map<number, number>();
   for (const day of calendar) {
@@ -67,7 +87,7 @@ export function sortCollections(
   const groupIII: UserCollection[] = [];
 
   for (const c of collections) {
-    const { group } = getCollectionMeta(c, airingMap, airedEpMap, today);
+    const { group } = getCollectionMeta(c, airingMap, airedEpMap, today, airingTimeMap);
 
     if (group === "airing_not_caught") {
       groupI.push(c);
@@ -103,14 +123,34 @@ export function getDisplayLabel(
   today: number,
   airingTimeMap?: Map<number, { airingAt: number; episode: number }>,
 ): string | null {
-  const { group } = getCollectionMeta(c, airingMap, airedEpMap, today);
+  const { group } = getCollectionMeta(c, airingMap, airedEpMap, today, airingTimeMap);
 
   if (group === "airing_caught") {
-    const { weekday } = getCollectionMeta(c, airingMap, airedEpMap, today);
+    const { weekday, airedEp } = getCollectionMeta(c, airingMap, airedEpMap, today, airingTimeMap);
     if (weekday <= 0) return "等待更新";
 
     let label: string;
-    if (weekday === today) {
+    let showTodayAsNextWeek = false;
+
+    // Check if today's episode has aired and user caught up - show next week instead
+    if (weekday === today && airingTimeMap) {
+      const airingTime = airingTimeMap.get(c.subject_id);
+      if (airingTime) {
+        // Compare time-of-day only (assuming weekly same-time schedule)
+        const airingDate = new Date(airingTime.airingAt * 1000);
+        const airingMinutes = airingDate.getHours() * 60 + airingDate.getMinutes();
+
+        const now = new Date();
+        const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+        // If episode has aired today AND user has caught up to it, show next week
+        if (nowMinutes >= airingMinutes && c.ep_status >= airedEp) {
+          showTodayAsNextWeek = true;
+        }
+      }
+    }
+
+    if (weekday === today && !showTodayAsNextWeek) {
       label = "今日";
     } else {
       const tomorrow = today >= 7 ? 1 : today + 1;
@@ -122,6 +162,9 @@ export function getDisplayLabel(
       const d = new Date(at.airingAt * 1000);
       const hh = String(d.getHours()).padStart(2, "0");
       const mm = String(d.getMinutes()).padStart(2, "0");
+      if (showTodayAsNextWeek) {
+        return `下周${label} ${hh}:${mm} 更新`;
+      }
       return `${label} ${hh}:${mm} 更新`;
     }
 
