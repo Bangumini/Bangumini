@@ -13,7 +13,9 @@ import {
 } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
+  deleteCachedValue,
   deleteCachedValuesByPrefix,
+  readCachedCollection,
   readCachedValue,
   readCachedValueEntry,
   readCachedValueWithin,
@@ -367,10 +369,16 @@ export default function CollectionsPage() {
   useEffect(() => {
     const state = location.state as CollectionsLocationState | null;
     if (state?.fromSubject && state?.subjectId && uname) {
+      const subjectId = state.subjectId;
       let cancelled = false;
       void (async () => {
         // Get the updated collection from the detail page's cache
-        const updatedCollection = queryClient.getQueryData<UserCollection>(["collection", state.subjectId]);
+        let updatedCollection = queryClient.getQueryData<UserCollection>(["collection", subjectId]);
+
+        // Fallback: try to read the individual collection from SQLite
+        if (!updatedCollection) {
+          updatedCollection = (await readCachedCollection(uname!, subjectId)) ?? undefined;
+        }
 
         // Get the current collections list
         const currentData = queryClient.getQueryData<PagedResponse<UserCollection>>(collectionsQueryKey);
@@ -413,9 +421,10 @@ export default function CollectionsPage() {
             // Update React Query cache directly without triggering refetch
             queryClient.setQueryData(collectionsQueryKey, updatedData);
           }
-        } else if (!currentData?.data) {
-          // No existing data - fall back to invalidation to trigger fresh fetch
+        } else {
+          // No usable data — delete stale SQLite cache and force a fresh fetch
           if (!cancelled) {
+            await deleteCachedValue(collectionsCacheKey);
             await queryClient.invalidateQueries({ queryKey: collectionsQueryKey, exact: true });
           }
         }

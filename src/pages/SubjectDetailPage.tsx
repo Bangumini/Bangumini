@@ -26,11 +26,13 @@ import {
   readCachedPersonsWithin,
   readCachedSubjectDeepWithin,
   readCachedSubjectDeep,
+  readCachedValue,
   writeCachedCharacters,
   writeCachedCollection,
   writeCachedEpisodes,
   writeCachedPersons,
   writeCachedSubject,
+  writeCachedValue,
 } from "@shared/storage/sqlite-cache";
 import CachedImage from "../components/CachedImage";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
@@ -39,7 +41,7 @@ function isNotFoundError(error: unknown) {
   return error instanceof Error && error.message.includes("Bangumi API error 404");
 }
 
-function syncCollectionsCache(queryClient: QueryClient, subjectId: number) {
+function syncCollectionsCache(queryClient: QueryClient, subjectId: number, previousType?: number) {
   const collection = queryClient.getQueryData<UserCollection>(["collection", subjectId]);
   if (!collection) return;
 
@@ -60,6 +62,37 @@ function syncCollectionsCache(queryClient: QueryClient, subjectId: number) {
       };
     },
   );
+
+  // Persist the change to SQLite so it survives page refreshes
+  const uname = getUsername();
+  if (!uname) return;
+
+  const cacheKey = `collections-${collection.type}-${uname}`;
+  readCachedValue<PagedResponse<UserCollection>>(cacheKey).then((cached) => {
+    if (!cached?.data) return;
+    const idx = cached.data.findIndex((item) => item.subject_id === subjectId);
+    if (idx >= 0) {
+      cached.data[idx] = collection;
+    } else {
+      cached.data = [collection, ...cached.data];
+      cached.total = (cached.total ?? 0) + 1;
+    }
+    writeCachedValue(cacheKey, cached);
+  });
+
+  // Remove from old type's SQLite list if type changed
+  if (previousType && previousType !== collection.type) {
+    const oldCacheKey = `collections-${previousType}-${uname}`;
+    readCachedValue<PagedResponse<UserCollection>>(oldCacheKey).then((oldCached) => {
+      if (!oldCached?.data) return;
+      const idx = oldCached.data.findIndex((item) => item.subject_id === subjectId);
+      if (idx >= 0) {
+        oldCached.data.splice(idx, 1);
+        oldCached.total = Math.max(0, (oldCached.total ?? oldCached.data.length) - 1);
+        writeCachedValue(oldCacheKey, oldCached);
+      }
+    });
+  }
 }
 
 function getAirWeekdayLabel(airWeekday?: number, date?: string) {
@@ -503,9 +536,10 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       if (ids.length > 0) {
         await patchSubjectEpisodes(subjectId, { episode_id: ids, type: targetEp > currentEp ? 2 : 0 });
       }
+      const prevType = collection?.type;
       await fetchCollectionFromNetwork();
       await syncLocalCollection({ ep_status: targetEp, type: 3 });
-      syncCollectionsCache(queryClient, subjectId);
+      syncCollectionsCache(queryClient, subjectId, prevType);
       setTargetEp(null);
       collectionChangedRef.current = true;
       saved = true;
@@ -527,7 +561,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
           setConfirmDialog(null);
           postUserCollection(subjectId, { type: 2 })
             .then(() => {
-              fetchCollectionFromNetwork().then(() => syncCollectionsCache(queryClient, subjectId));
+              fetchCollectionFromNetwork().then(() => syncCollectionsCache(queryClient, subjectId, 3));
               collectionChangedRef.current = true;
             })
             .catch(() => {
@@ -542,9 +576,10 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
     setLoading(true);
     setPaletteOpen(false);
     try {
+      const prevType = collection?.type;
       await postUserCollection(subjectId, { type });
       await fetchCollectionFromNetwork();
-      syncCollectionsCache(queryClient, subjectId);
+      syncCollectionsCache(queryClient, subjectId, prevType);
       collectionChangedRef.current = true;
     } catch {
       await showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
