@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { setToken } from "../api/oauth";
+import ProxySettingsModal from "../components/ProxySettingsModal";
 
 export default function LoginPage({ onLogin }: { onLogin: () => void }) {
   const [token, setTokenText] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showProxyModal, setShowProxyModal] = useState(false);
 
   function handleManualSubmit() {
     const trimmed = token.trim();
@@ -63,9 +65,7 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
     <div className="flex items-center justify-center h-screen">
       <div className="w-96 p-6 bg-panel/60 rounded-card border border-line space-y-4 shadow-pop">
         <div className="flex flex-col items-center gap-2.5 pb-1">
-          <div className="w-11 h-11 rounded-xl bg-accent/90 flex items-center justify-center text-accent-fg text-lg font-bold">
-            B
-          </div>
+          <img src="/icon.png" className="w-11 h-11 rounded-xl" alt="" />
           <h1 className="text-[15px] font-semibold">登录 Bangumi</h1>
         </div>
 
@@ -110,7 +110,18 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
         >
           手动登录
         </button>
+
+        <div className="text-center pt-1">
+          <button
+            onClick={() => setShowProxyModal(true)}
+            className="text-[12px] text-fg-tertiary hover:text-accent transition-colors"
+          >
+            代理设置
+          </button>
+        </div>
       </div>
+
+      {showProxyModal && <ProxySettingsModal onClose={() => setShowProxyModal(false)} />}
     </div>
   );
 }

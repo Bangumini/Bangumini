@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { setTokenProvider } from "@shared/api/client";
 import { getAccessToken, fetchAndCacheUsername } from "./api/oauth";
@@ -17,6 +17,14 @@ import LoginPage from "./pages/LoginPage";
 import SettingsPage from "./pages/SettingsPage";
 
 setTokenProvider(getAccessToken);
+
+function RequireAuth() {
+  const { authenticated } = useAuth();
+  if (!authenticated) {
+    return <Navigate to="/login" replace />;
+  }
+  return <Outlet />;
+}
 
 export default function App() {
   const { authLoading, authenticated, handleLogin } = useAuth();
@@ -55,21 +63,22 @@ export default function App() {
     );
   }
 
-  if (!authenticated) {
-    return <LoginPage onLogin={handleLogin} />;
-  }
-
   return (
     <Routes>
-      <Route element={<Layout />}>
-        <Route path="/" element={<Navigate to="/collections" replace />} />
-        <Route path="/search" element={<SearchPage />} />
-        <Route path="/calendar" element={<CalendarPage />} />
-        <Route path="/collections" element={<CollectionsPage />} />
-        <Route path="/next-season" element={<NextSeasonPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
+      <Route path="/login" element={
+        authenticated ? <Navigate to="/collections" replace /> : <LoginPage onLogin={handleLogin} />
+      } />
+      <Route element={<RequireAuth />}>
+        <Route element={<Layout />}>
+          <Route path="/" element={<Navigate to="/collections" replace />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/calendar" element={<CalendarPage />} />
+          <Route path="/collections" element={<CollectionsPage />} />
+          <Route path="/next-season" element={<NextSeasonPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Route>
+        <Route path="/subject/:id" element={<SubjectDetailPage />} />
       </Route>
-      <Route path="/subject/:id" element={<SubjectDetailPage />} />
     </Routes>
   );
 }

@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { clearToken, setToken } from "../api/oauth";
+import { clearToken, setToken, isLoggedIn } from "../api/oauth";
 import ShortcutRecorder from "../components/ShortcutRecorder";
 
 type DistributionKind = "installer" | "portable";
@@ -56,6 +57,7 @@ const getPortableDownloadUrl = (version: string) => {
 };
 
 export default function SettingsPage() {
+  const navigate = useNavigate();
   const [tokenText, setTokenText] = useState("");
   const [autostart, setAutostart] = useState(false);
   const [autostartLoading, setAutostartLoading] = useState(true);
@@ -67,6 +69,7 @@ export default function SettingsPage() {
   const updateRef = useRef<Awaited<ReturnType<typeof check>>>(null);
   const [proxy, setProxy] = useState<ProxyConfig>(loadProxyConfig);
   const [proxySaved, setProxySaved] = useState(false);
+  const authenticated = isLoggedIn();
 
   useEffect(() => {
     invoke<boolean>("get_autostart")
@@ -146,19 +149,37 @@ export default function SettingsPage() {
     }
   };
 
-  const handleSaveProxy = async () => {
-    saveProxyConfig(proxy);
+  const persistProxy = async (cfg: ProxyConfig) => {
+    saveProxyConfig(cfg);
     try {
-      await invoke("set_proxy_config", { config: proxyConfigToRust(proxy) });
-      setProxySaved(true);
-      setTimeout(() => setProxySaved(false), 2000);
+      await invoke("set_proxy_config", { config: proxyConfigToRust(cfg) });
     } catch {
       // save failed silently
     }
   };
 
+  const handleToggleProxy = () => {
+    const next = { ...proxy, enabled: !proxy.enabled };
+    setProxy(next);
+    persistProxy(next);
+  };
+
+  const handleSaveProxy = async () => {
+    await persistProxy(proxy);
+    setProxySaved(true);
+    setTimeout(() => setProxySaved(false), 2000);
+  };
+
   return (
     <div className="p-5 max-w-lg space-y-6">
+      {!authenticated && (
+        <button
+          onClick={() => navigate("/login")}
+          className="text-[12px] text-fg-tertiary hover:text-accent transition-colors"
+        >
+          ← 返回登录
+        </button>
+      )}
       <section>
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">账户</h3>
         <label className="block text-[13px] text-fg-secondary mb-1.5">Access Token</label>
@@ -200,7 +221,7 @@ export default function SettingsPage() {
             type="button"
             role="switch"
             aria-checked={proxy.enabled}
-            onClick={() => setProxy((p) => ({ ...p, enabled: !p.enabled }))}
+            onClick={handleToggleProxy}
             className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
               proxy.enabled ? "bg-accent" : "bg-line"
             }`}

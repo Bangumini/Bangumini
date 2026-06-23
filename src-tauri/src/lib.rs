@@ -83,6 +83,8 @@ struct ProxyHolder {
 
 fn build_client_with_proxy(holder: &ProxyHolder) -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
+    let mut proxy_set = false;
+
     if let Ok(guard) = holder.config.lock() {
         if let Some(cfg) = guard.as_ref() {
             if cfg.enabled && !cfg.host.is_empty() {
@@ -93,10 +95,27 @@ fn build_client_with_proxy(holder: &ProxyHolder) -> reqwest::Client {
                         _ => proxy,
                     };
                     builder = builder.proxy(proxy);
+                    proxy_set = true;
                 }
             }
         }
     }
+
+    if !proxy_set {
+        let sys_proxy = std::env::var("HTTPS_PROXY")
+            .or_else(|_| std::env::var("https_proxy"))
+            .or_else(|_| std::env::var("HTTP_PROXY"))
+            .or_else(|_| std::env::var("http_proxy"))
+            .or_else(|_| std::env::var("ALL_PROXY"))
+            .or_else(|_| std::env::var("all_proxy"));
+        if let Ok(url) = sys_proxy {
+            if let Ok(proxy) = reqwest::Proxy::all(&url) {
+                builder = builder.no_proxy();
+                builder = builder.proxy(proxy);
+            }
+        }
+    }
+
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
