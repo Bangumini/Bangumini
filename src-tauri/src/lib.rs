@@ -67,6 +67,39 @@ struct ShortcutHolder {
 
 static IS_DRAGGING: AtomicBool = AtomicBool::new(false);
 
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
+struct ProxyConfig {
+    enabled: bool,
+    protocol: String,
+    host: String,
+    port: u16,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+struct ProxyHolder {
+    config: StdMutex<Option<ProxyConfig>>,
+}
+
+fn build_client_with_proxy(holder: &ProxyHolder) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+    if let Ok(guard) = holder.config.lock() {
+        if let Some(cfg) = guard.as_ref() {
+            if cfg.enabled && !cfg.host.is_empty() {
+                let proxy_url = format!("{}://{}:{}", cfg.protocol, cfg.host, cfg.port);
+                if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+                    let proxy = match (&cfg.username, &cfg.password) {
+                        (Some(u), Some(p)) => proxy.basic_auth(u, p),
+                        _ => proxy,
+                    };
+                    builder = builder.proxy(proxy);
+                }
+            }
+        }
+    }
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
 fn show_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
     guard.store(true, Ordering::SeqCst);
     let _ = w.show();
@@ -136,8 +169,9 @@ struct OAuthResult {
 }
 
 #[tauri::command]
-async fn fetch_proxy(req: FetchRequest) -> Result<FetchResponse, String> {
-    let client = reqwest::Client::new();
+async fn fetch_proxy(app: tauri::AppHandle, req: FetchRequest) -> Result<FetchResponse, String> {
+    let holder = app.state::<ProxyHolder>();
+    let client = build_client_with_proxy(&*holder);
     let mut builder = match req.method.as_str() {
         "GET" => client.get(&req.url),
         "POST" => client.post(&req.url),
@@ -219,7 +253,8 @@ async fn cache_image(app: tauri::AppHandle, remote_url: String) -> Result<CacheI
 
     let url_ext = extension_from_url(&remote_url);
 
-    let response = reqwest::Client::new()
+    let client = build_client_with_proxy(&*app.state::<ProxyHolder>());
+    let response = client
         .get(url)
         .header("User-Agent", "Bangumini/1.0")
         .send()
@@ -369,7 +404,7 @@ async fn wait_oauth_callback(app: tauri::AppHandle, expected_state: String) -> R
     }
 
     // Exchange code for tokens
-    let client = reqwest::Client::new();
+    let client = build_client_with_proxy(&*app.state::<ProxyHolder>());
     let params = [
         ("grant_type", "authorization_code"),
         ("client_id", CLIENT_ID),
@@ -430,7 +465,9 @@ pub fn run() {
             cache_image,
             delete_cached_files,
             start_hotkey_recording,
-            stop_hotkey_recording
+            stop_hotkey_recording,
+            set_proxy_config,
+            get_proxy_config
         ])
         .setup(|app| {
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -446,6 +483,11 @@ pub fn run() {
             // Holder for the currently registered global shortcut
             app.manage(ShortcutHolder {
                 current: StdMutex::new(None),
+            });
+
+            // Holder for proxy configuration
+            app.manage(ProxyHolder {
+                config: StdMutex::new(None),
             });
 
             let window = app.get_webview_window("main").unwrap();
@@ -661,6 +703,21 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
 fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_proxy_config(app: tauri::AppHandle, config: ProxyConfig) -> Result<(), String> {
+    let holder = app.state::<ProxyHolder>();
+    let mut guard = holder.config.lock().map_err(|e| e.to_string())?;
+    *guard = Some(config);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_proxy_config(app: tauri::AppHandle) -> Result<Option<ProxyConfig>, String> {
+    let holder = app.state::<ProxyHolder>();
+    let guard = holder.config.lock().map_err(|e| e.to_string())?;
+    Ok(guard.clone())
 }
 
 #[cfg(windows)]
