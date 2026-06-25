@@ -6,6 +6,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { clearToken, setToken, isLoggedIn } from "../api/oauth";
+import { setCopySubjectTitleWithSeason, shouldCopySubjectTitleWithSeason } from "../api/subject-title-copy";
 import ShortcutRecorder from "../components/ShortcutRecorder";
 
 type DistributionKind = "installer" | "portable";
@@ -69,6 +70,7 @@ export default function SettingsPage() {
   const updateRef = useRef<Awaited<ReturnType<typeof check>>>(null);
   const [proxy, setProxy] = useState<ProxyConfig>(loadProxyConfig);
   const [proxySaved, setProxySaved] = useState(false);
+  const [copyTitleWithSeason, setCopyTitleWithSeason] = useState(shouldCopySubjectTitleWithSeason);
   const authenticated = isLoggedIn();
 
   useEffect(() => {
@@ -168,6 +170,12 @@ export default function SettingsPage() {
     await persistProxy(proxy);
     setProxySaved(true);
     setTimeout(() => setProxySaved(false), 2000);
+  };
+
+  const handleToggleCopyTitleWithSeason = () => {
+    const next = !copyTitleWithSeason;
+    setCopyTitleWithSeason(next);
+    setCopySubjectTitleWithSeason(next);
   };
 
   return (
@@ -301,24 +309,44 @@ export default function SettingsPage() {
 
       <section>
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">通用</h3>
-        <div className="flex items-center justify-between">
-          <span className="text-[13px] text-fg-secondary">开机自启动</span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={autostart}
-            disabled={autostartLoading}
-            onClick={toggleAutostart}
-            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-              autostartLoading ? "opacity-40" : ""
-            } ${autostart ? "bg-accent" : "bg-line"}`}
-          >
-            <span
-              className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-                autostart ? "translate-x-4" : "translate-x-0"
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-[13px] text-fg-secondary">复制条目名时带上季度</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={copyTitleWithSeason}
+              onClick={handleToggleCopyTitleWithSeason}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                copyTitleWithSeason ? "bg-accent" : "bg-line"
               }`}
-            />
-          </button>
+            >
+              <span
+                className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
+                  copyTitleWithSeason ? "translate-x-4" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-[13px] text-fg-secondary">开机自启动</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autostart}
+              disabled={autostartLoading}
+              onClick={toggleAutostart}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                autostartLoading ? "opacity-40" : ""
+              } ${autostart ? "bg-accent" : "bg-line"}`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
+                  autostart ? "translate-x-4" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
         </div>
       </section>
 

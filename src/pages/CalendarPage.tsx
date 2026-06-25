@@ -14,6 +14,7 @@ import {
 import { WEEKDAY_CN, getTodayBangumiWeekday } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import type { SubjectSmall } from "@shared/api/types";
+import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import { SubjectRow, Rating, Meta } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { isCacheStale, refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
@@ -173,7 +174,7 @@ export default function CalendarPage() {
       handler: () => {
         const item = displayItems[focusedIndex];
         if (item) {
-          const name = item.name_cn || item.name;
+          const name = getSubjectTitleForCopy(item.name_cn || item.name);
           navigator.clipboard.writeText(name).then(async () => {
             const { getCurrentWindow } = await import("@tauri-apps/api/window");
             await invoke("show_toast", { message: "已复制条目名" });

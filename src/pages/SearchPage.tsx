@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { searchSubjects } from "@shared/api/client";
 import { SubjectTypeLabel } from "@shared/api/types";
 import { writeCachedSubjectPreviews } from "@shared/storage/sqlite-cache";
+import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import { SubjectRow, Rating, Meta } from "../components/SubjectRow";
 import { SearchIcon } from "../components/icons";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
@@ -79,7 +80,7 @@ export default function SearchPage() {
       handler: () => {
         const s = subjects[focusedIndex];
         if (s) {
-          const name = s.name_cn || s.name;
+          const name = getSubjectTitleForCopy(s.name_cn || s.name);
           navigator.clipboard.writeText(name).then(async () => {
             const { getCurrentWindow } = await import("@tauri-apps/api/window");
             await invoke("show_toast", { message: "已复制条目名" });

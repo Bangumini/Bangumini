@@ -26,6 +26,7 @@ import {
 } from "@shared/storage/sqlite-cache";
 import { getUsername } from "../api/oauth";
 import { isCacheStale, refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
+import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
@@ -1035,7 +1036,7 @@ export default function CollectionsPage() {
       handler: () => {
         const item = paged[focusedIndex];
         if (item) {
-          const name = item.subject.name_cn || item.subject.name;
+          const name = getSubjectTitleForCopy(item.subject.name_cn || item.subject.name);
           navigator.clipboard.writeText(name).then(async () => {
             const { getCurrentWindow } = await import("@tauri-apps/api/window");
             await invoke("show_toast", { message: "已复制条目名" });

@@ -16,6 +16,7 @@ import {
   writeCachedValue,
 } from "@shared/storage/sqlite-cache";
 import { isCacheStale, refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
+import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import { SubjectRow, Meta } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
@@ -513,7 +514,7 @@ export default function NextSeasonPage() {
       handler: () => {
         const item = currentItems[focusedIndex];
         if (item) {
-          const name = item.nameCn || item.title.native;
+          const name = getSubjectTitleForCopy(item.nameCn || item.title.native);
           navigator.clipboard.writeText(name).then(async () => {
             const { getCurrentWindow } = await import("@tauri-apps/api/window");
             await invoke("show_toast", { message: "已复制条目名" });

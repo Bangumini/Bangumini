@@ -36,6 +36,7 @@ import {
 } from "@shared/storage/sqlite-cache";
 import CachedImage from "../components/CachedImage";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 
 function isNotFoundError(error: unknown) {
   return error instanceof Error && error.message.includes("Bangumi API error 404");
@@ -646,7 +647,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       key: "Enter",
       when: ({ mod, isInput }) => (mod || !isInput) && !paletteOpen && !isDirty,
       handler: () => {
-        const name = subject?.name_cn || subject?.name || "";
+        const name = getSubjectTitleForCopy(subject?.name_cn || subject?.name || "");
         if (name) {
           navigator.clipboard.writeText(name).then(async () => {
             const { getCurrentWindow } = await import("@tauri-apps/api/window");
