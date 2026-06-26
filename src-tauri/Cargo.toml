@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-prevent-default = { version = "5", features = ["platform-windows"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-autostart = "2"
