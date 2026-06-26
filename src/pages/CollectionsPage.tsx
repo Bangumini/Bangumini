@@ -616,7 +616,7 @@ export default function CollectionsPage() {
       return map;
     },
     enabled: shouldLoadAiringTimes,
-    refetchOnWindowFocus: "always",
+    staleTime: 5 * 60 * 1000,
     refetchOnMount: shouldSuppressRefetch ? false : true,
   });
 
