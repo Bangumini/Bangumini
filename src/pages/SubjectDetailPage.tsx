@@ -37,63 +37,82 @@ import {
 import CachedImage from "../components/CachedImage";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
+import { addPendingMarkWatchedAction, runCollectionTask } from "../api/collection-tasks";
 
 function isNotFoundError(error: unknown) {
   return error instanceof Error && error.message.includes("Bangumi API error 404");
 }
 
-function syncCollectionsCache(queryClient: QueryClient, subjectId: number, previousType?: number) {
-  const collection = queryClient.getQueryData<UserCollection>(["collection", subjectId]);
-  if (!collection) return;
+function upsertCollection(
+  data: PagedResponse<UserCollection>,
+  collection: UserCollection,
+): PagedResponse<UserCollection> {
+  const idx = data.data.findIndex((item) => item.subject_id === collection.subject_id);
+  if (idx >= 0) {
+    const next = [...data.data];
+    next[idx] = collection;
+    return { ...data, data: next };
+  }
 
-  queryClient.setQueriesData<{ data: UserCollection[]; total?: number }>(
-    { queryKey: ["collections"], exact: false },
-    (old) => {
-      if (!old?.data) return old;
-      const idx = old.data.findIndex((item) => item.subject_id === subjectId);
-      if (idx >= 0) {
-        const next = [...old.data];
-        next[idx] = collection;
-        return { ...old, data: next };
-      }
-      return {
-        ...old,
-        total: (old.total ?? old.data.length) + 1,
-        data: [collection, ...old.data],
-      };
-    },
+  return {
+    ...data,
+    total: data.total + 1,
+    data: [collection, ...data.data],
+  };
+}
+
+function removeCollection(
+  data: PagedResponse<UserCollection>,
+  subjectId: number,
+): PagedResponse<UserCollection> {
+  const idx = data.data.findIndex((item) => item.subject_id === subjectId);
+  if (idx < 0) return data;
+
+  const next = [...data.data];
+  next.splice(idx, 1);
+  return {
+    ...data,
+    total: Math.max(0, data.total - 1),
+    data: next,
+  };
+}
+
+async function syncCollectionsCache(queryClient: QueryClient, subjectId: number, previousType?: number) {
+  const collection = queryClient.getQueryData<UserCollection>(["collection", subjectId]);
+  if (!collection) return null;
+
+  const uname = getUsername();
+  if (!uname) return collection;
+
+  queryClient.setQueryData<PagedResponse<UserCollection>>(
+    ["collections", String(collection.type), uname],
+    (old) => old ? upsertCollection(old, collection) : old,
   );
 
-  // Persist the change to SQLite so it survives page refreshes
-  const uname = getUsername();
-  if (!uname) return;
+  if (previousType && previousType !== collection.type) {
+    queryClient.setQueryData<PagedResponse<UserCollection>>(
+      ["collections", String(previousType), uname],
+      (old) => old ? removeCollection(old, subjectId) : old,
+    );
+  }
 
+  // Persist the change to SQLite so it survives page refreshes.
   const cacheKey = `collections-${collection.type}-${uname}`;
-  readCachedValue<PagedResponse<UserCollection>>(cacheKey).then((cached) => {
-    if (!cached?.data) return;
-    const idx = cached.data.findIndex((item) => item.subject_id === subjectId);
-    if (idx >= 0) {
-      cached.data[idx] = collection;
-    } else {
-      cached.data = [collection, ...cached.data];
-      cached.total = (cached.total ?? 0) + 1;
-    }
-    writeCachedValue(cacheKey, cached);
-  });
+  const cached = await readCachedValue<PagedResponse<UserCollection>>(cacheKey);
+  if (cached?.data) {
+    await writeCachedValue(cacheKey, upsertCollection(cached, collection));
+  }
 
   // Remove from old type's SQLite list if type changed
   if (previousType && previousType !== collection.type) {
     const oldCacheKey = `collections-${previousType}-${uname}`;
-    readCachedValue<PagedResponse<UserCollection>>(oldCacheKey).then((oldCached) => {
-      if (!oldCached?.data) return;
-      const idx = oldCached.data.findIndex((item) => item.subject_id === subjectId);
-      if (idx >= 0) {
-        oldCached.data.splice(idx, 1);
-        oldCached.total = Math.max(0, (oldCached.total ?? oldCached.data.length) - 1);
-        writeCachedValue(oldCacheKey, oldCached);
-      }
-    });
+    const oldCached = await readCachedValue<PagedResponse<UserCollection>>(oldCacheKey);
+    if (oldCached?.data) {
+      await writeCachedValue(oldCacheKey, removeCollection(oldCached, subjectId));
+    }
   }
+
+  return collection;
 }
 
 function getAirWeekdayLabel(airWeekday?: number, date?: string) {
@@ -233,6 +252,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
   const [loadEpisodeData, setLoadEpisodeData] = useState(false);
   const initialEpStatus = useRef<number | null>(null);
   const collectionChangedRef = useRef(false);
+  const isMounted = useRef(true);
   const leftColumnRef = useRef<HTMLDivElement>(null);
   const subjectQueryKey = ["subject", subjectId] as const;
   const personsQueryKey = ["persons", subjectId] as const;
@@ -280,7 +300,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
   }
 
   async function ensureEpisodesLoaded() {
-    setLoadEpisodeData(true);
+    if (isMounted.current) setLoadEpisodeData(true);
     const result = await queryClient.ensureQueryData<PagedResponse<Episode> | null>({
       queryKey: episodesQueryKey,
       queryFn: loadEpisodesFromCacheOrNetwork,
@@ -384,6 +404,13 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 
   const collectionQueryKey = ["collection", subjectId] as const;
 
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
+
   async function fetchCollectionFromNetwork() {
     const uname = getUsername();
     if (!uname) return null;
@@ -481,15 +508,23 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
           title: "收藏并切换到「在看」？",
           message: "更新观看进度需要先将条目以「在看」状态收藏",
           confirmLabel: "收藏",
-          onConfirm: () => {
+          onConfirm: async () => {
             setConfirmDialog(null);
-            postUserCollection(subjectId, { type: 3 })
-              .then(() => fetchCollectionFromNetwork())
-              .then(() => resolve(true))
-              .catch(() => {
-                void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
-                resolve(false);
+            if (isMounted.current) setLoading(true);
+            try {
+              await runCollectionTask({ subjectId, nextType: 3 }, async () => {
+                await postUserCollection(subjectId, { type: 3 });
+                await fetchCollectionFromNetwork();
+                const synced = await syncCollectionsCache(queryClient, subjectId);
+                return { subjectId, nextType: synced?.type ?? 3 };
               });
+              resolve(true);
+            } catch {
+              void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
+              resolve(false);
+            } finally {
+              if (isMounted.current) setLoading(false);
+            }
           },
         });
         return;
@@ -500,15 +535,23 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
           title: "切换到「在看」？",
           message: `当前收藏状态为「${CollectionTypeLabel[currentType] || "其他"}」，需要切换到「在看」才能更新进度`,
           confirmLabel: "切换",
-          onConfirm: () => {
+          onConfirm: async () => {
             setConfirmDialog(null);
-            postUserCollection(subjectId, { type: 3 })
-              .then(() => fetchCollectionFromNetwork())
-              .then(() => resolve(true))
-              .catch(() => {
-                void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
-                resolve(false);
+            if (isMounted.current) setLoading(true);
+            try {
+              await runCollectionTask({ subjectId, previousType: currentType, nextType: 3 }, async () => {
+                await postUserCollection(subjectId, { type: 3 });
+                await fetchCollectionFromNetwork();
+                const synced = await syncCollectionsCache(queryClient, subjectId, currentType);
+                return { subjectId, previousType: currentType, nextType: synced?.type ?? 3 };
               });
+              resolve(true);
+            } catch {
+              void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
+              resolve(false);
+            } finally {
+              if (isMounted.current) setLoading(false);
+            }
           },
         });
         return;
@@ -523,51 +566,74 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
     const ok = await ensureWatching();
     if (!ok) return;
 
-    setLoading(true);
+    const progressTarget = targetEp;
+    const prevType = collection?.type;
+    if (isMounted.current) setLoading(true);
     let saved = false;
     try {
-      const episodePayload = episodeData ?? (await ensureEpisodesLoaded());
-      const from = Math.min(currentEp, targetEp);
-      const to = Math.max(currentEp, targetEp);
-      const episodeSource = episodePayload?.data?.slice().sort((a, b) => a.sort - b.sort) ?? [];
-      const ids = episodeSource.filter((e) => e.type === 0).slice(from, to).map((e) => e.id);
-      if (ids.length === 0 && from !== to) {
-        throw new Error("Episode list is not ready");
+      await runCollectionTask({ subjectId, previousType: prevType, nextType: 3 }, async () => {
+        const episodePayload = episodeData ?? (await ensureEpisodesLoaded());
+        const from = Math.min(currentEp, progressTarget);
+        const to = Math.max(currentEp, progressTarget);
+        const episodeSource = episodePayload?.data?.slice().sort((a, b) => a.sort - b.sort) ?? [];
+        const ids = episodeSource.filter((e) => e.type === 0).slice(from, to).map((e) => e.id);
+        if (ids.length === 0 && from !== to) {
+          throw new Error("Episode list is not ready");
+        }
+        if (ids.length > 0) {
+          await patchSubjectEpisodes(subjectId, { episode_id: ids, type: progressTarget > currentEp ? 2 : 0 });
+        }
+        await fetchCollectionFromNetwork();
+        await syncLocalCollection({ ep_status: progressTarget, type: 3 });
+        const synced = await syncCollectionsCache(queryClient, subjectId, prevType);
+        return { subjectId, previousType: prevType, nextType: synced?.type ?? 3 };
+      });
+      if (isMounted.current) {
+        setTargetEp(null);
+        collectionChangedRef.current = true;
       }
-      if (ids.length > 0) {
-        await patchSubjectEpisodes(subjectId, { episode_id: ids, type: targetEp > currentEp ? 2 : 0 });
-      }
-      const prevType = collection?.type;
-      await fetchCollectionFromNetwork();
-      await syncLocalCollection({ ep_status: targetEp, type: 3 });
-      syncCollectionsCache(queryClient, subjectId, prevType);
-      setTargetEp(null);
-      collectionChangedRef.current = true;
       saved = true;
     } catch {
       await showSaveFailedToast("进度保存失败，请检查网络后重试");
     } finally {
-      setLoading(false);
+      if (isMounted.current) setLoading(false);
     }
 
     if (!saved) return;
 
     // After progress update, check if fully watched
-    if (targetEp >= totalEp && totalEp > 0) {
+    if (progressTarget >= totalEp && totalEp > 0) {
+      if (!isMounted.current) {
+        addPendingMarkWatchedAction({
+          subjectId,
+          subjectTitle: subject?.name_cn || subject?.name || `#${subjectId}`,
+          totalEp,
+          previousType: 3,
+          nextType: 2,
+        });
+        return;
+      }
+
       setConfirmDialog({
         title: "标记为「看过」？",
         message: `观看进度已达 ${totalEp} 集（总集数），是否标记为「看过」？`,
         confirmLabel: "标记",
-        onConfirm: () => {
+        onConfirm: async () => {
           setConfirmDialog(null);
-          postUserCollection(subjectId, { type: 2 })
-            .then(() => {
-              fetchCollectionFromNetwork().then(() => syncCollectionsCache(queryClient, subjectId, 3));
-              collectionChangedRef.current = true;
-            })
-            .catch(() => {
-              void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
+          if (isMounted.current) setLoading(true);
+          try {
+            await runCollectionTask({ subjectId, previousType: 3, nextType: 2 }, async () => {
+              await postUserCollection(subjectId, { type: 2 });
+              await fetchCollectionFromNetwork();
+              const synced = await syncCollectionsCache(queryClient, subjectId, 3);
+              return { subjectId, previousType: 3, nextType: synced?.type ?? 2 };
             });
+            if (isMounted.current) collectionChangedRef.current = true;
+          } catch {
+            await showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
+          } finally {
+            if (isMounted.current) setLoading(false);
+          }
         },
       });
     }
@@ -578,14 +644,17 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
     setPaletteOpen(false);
     try {
       const prevType = collection?.type;
-      await postUserCollection(subjectId, { type });
-      await fetchCollectionFromNetwork();
-      syncCollectionsCache(queryClient, subjectId, prevType);
-      collectionChangedRef.current = true;
+      await runCollectionTask({ subjectId, previousType: prevType, nextType: type }, async () => {
+        await postUserCollection(subjectId, { type });
+        await fetchCollectionFromNetwork();
+        const synced = await syncCollectionsCache(queryClient, subjectId, prevType);
+        return { subjectId, previousType: prevType, nextType: synced?.type ?? type };
+      });
+      if (isMounted.current) collectionChangedRef.current = true;
     } catch {
       await showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
     } finally {
-      setLoading(false);
+      if (isMounted.current) setLoading(false);
     }
   }
 
