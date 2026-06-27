@@ -8,6 +8,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { clearToken, setToken, isLoggedIn } from "../api/oauth";
 import { setCopySubjectTitleWithSeason, shouldCopySubjectTitleWithSeason } from "../api/subject-title-copy";
 import ShortcutRecorder from "../components/ShortcutRecorder";
+import { GithubIcon, ExternalIcon } from "../components/icons";
 
 type DistributionKind = "installer" | "portable";
 
@@ -401,6 +402,18 @@ export default function SettingsPage() {
             </button>
           </div>
         )}
+      </section>
+
+      <section>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">关于</h3>
+        <button
+          onClick={() => openUrl("https://github.com/Flartiny/Bangumini")}
+          className="flex items-center gap-2 text-[13px] text-fg-secondary hover:text-accent transition-colors"
+        >
+          <GithubIcon size={16} />
+          <span>Bangumini</span>
+          <ExternalIcon size={14} />
+        </button>
       </section>
 
       <div className="pt-2 border-t border-line">
