@@ -639,6 +639,83 @@ export async function readCachedValueWithin<T>(
   }, null);
 }
 
+export async function readCachedValuesWithin<T>(
+  cacheKeys: string[],
+  maxAgeMs: number,
+): Promise<Map<string, T>> {
+  const uniqueKeys = [...new Set(cacheKeys)].filter(Boolean);
+  if (uniqueKeys.length === 0) return new Map();
+
+  return withDatabase(async (db) => {
+    const placeholders = uniqueKeys.map((_, index) => `$${index + 1}`).join(", ");
+    const rows = await db.select<Array<TimedPayloadRow & { cache_key: string }>>(
+      `SELECT cache_key, payload_json, updated_at, accessed_at
+       FROM cache_entries
+       WHERE cache_key IN (${placeholders})`,
+      uniqueKeys,
+    );
+
+    const now = Date.now();
+    const result = new Map<string, T>();
+    const touchedKeys: string[] = [];
+
+    for (const row of rows) {
+      if (!isUpdatedWithin(row, maxAgeMs, now)) continue;
+      const payload = parsePayload<T>([row]);
+      if (payload === null) continue;
+      result.set(row.cache_key, payload);
+      touchedKeys.push(row.cache_key);
+    }
+
+    if (touchedKeys.length > 0) {
+      const touchPlaceholders = touchedKeys.map((_, index) => `$${index + 2}`).join(", ");
+      await db.execute(
+        `UPDATE cache_entries SET accessed_at = $1 WHERE cache_key IN (${touchPlaceholders})`,
+        [now, ...touchedKeys],
+      );
+    }
+
+    return result;
+  }, new Map());
+}
+
+export async function readCachedValues<T>(cacheKeys: string[]): Promise<Map<string, T>> {
+  const uniqueKeys = [...new Set(cacheKeys)].filter(Boolean);
+  if (uniqueKeys.length === 0) return new Map();
+
+  return withDatabase(async (db) => {
+    const placeholders = uniqueKeys.map((_, index) => `$${index + 1}`).join(", ");
+    const rows = await db.select<Array<TimedPayloadRow & { cache_key: string }>>(
+      `SELECT cache_key, payload_json, updated_at, accessed_at
+       FROM cache_entries
+       WHERE cache_key IN (${placeholders})`,
+      uniqueKeys,
+    );
+
+    const now = Date.now();
+    const result = new Map<string, T>();
+    const touchedKeys: string[] = [];
+
+    for (const row of rows) {
+      if (!isFresh(row, now)) continue;
+      const payload = parsePayload<T>([row]);
+      if (payload === null) continue;
+      result.set(row.cache_key, payload);
+      touchedKeys.push(row.cache_key);
+    }
+
+    if (touchedKeys.length > 0) {
+      const touchPlaceholders = touchedKeys.map((_, index) => `$${index + 2}`).join(", ");
+      await db.execute(
+        `UPDATE cache_entries SET accessed_at = $1 WHERE cache_key IN (${touchPlaceholders})`,
+        [now, ...touchedKeys],
+      );
+    }
+
+    return result;
+  }, new Map());
+}
+
 export async function readCachedValueWithLegacy<T>(
   cacheKey: string,
   readLegacy: () => T | null,

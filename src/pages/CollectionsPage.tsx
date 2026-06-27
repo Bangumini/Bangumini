@@ -25,7 +25,8 @@ import {
   readCachedCollection,
   readCachedValue,
   readCachedValueEntry,
-  readCachedValueWithin,
+  readCachedValues,
+  readCachedValuesWithin,
   readCachedValueWithLegacy,
   readLegacyHttpCache,
   writeCachedCollection,
@@ -53,6 +54,7 @@ const AIRING_CACHE_PREFIX = "anilist-airing-";
 const EPISODES_CACHE_PREFIX = "episodes-";
 const AIRING_REQUEST_DELAY = 700;
 const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
+const AIRING_TIME_CACHE_MAX_AGE = 1000 * 60 * 60 * 24 * 90;
 const EPISODES_CACHE_MAX_AGE = 1000 * 60 * 30;
 const EMPTY_COLLECTIONS: UserCollection[] = [];
 const EMPTY_EPISODE_MAP = new Map<number, number>();
@@ -710,16 +712,22 @@ export default function CollectionsPage() {
       const map = new Map<number, AiringTime>();
       const staleBySubjectId = new Map<number, AiringTime>();
       let loadedFromNetwork = false;
+      const cacheKeysBySubjectId = new Map(
+        airingTimeTargets.map((item) => [item.subjectId, `${AIRING_CACHE_PREFIX}${item.subjectId}`]),
+      );
+      const cacheKeys = [...cacheKeysBySubjectId.values()];
+      const cachedByKey = await readCachedValuesWithin<AiringTime>(cacheKeys, AIRING_TIME_CACHE_MAX_AGE);
+      const staleByKey = await readCachedValues<AiringTime>(cacheKeys);
 
       for (const item of airingTimeTargets) {
-        const cacheKey = `${AIRING_CACHE_PREFIX}${item.subjectId}`;
-        const cached = await readCachedValueWithin<AiringTime>(cacheKey, QUERY_CACHE_MAX_AGE);
+        const cacheKey = cacheKeysBySubjectId.get(item.subjectId)!;
+        const cached = cachedByKey.get(cacheKey);
         if (cached) {
           map.set(item.subjectId, cached);
           continue;
         }
 
-        const stale = await readCachedValue<AiringTime>(cacheKey);
+        const stale = staleByKey.get(cacheKey);
         if (stale) staleBySubjectId.set(item.subjectId, stale);
 
         const legacy = readLegacyAiringCache(item.subjectId);
@@ -853,7 +861,6 @@ export default function CollectionsPage() {
     if (!nextAiringAt) return;
 
     const timer = window.setTimeout(() => {
-      queryClient.invalidateQueries({ queryKey: ["anilist-airing-times"] });
       queryClient.invalidateQueries({ queryKey: ["episodes"] });
     }, Math.max(1000, nextAiringAt - now + 1000));
 
@@ -864,15 +871,19 @@ export default function CollectionsPage() {
   useEffect(() => {
     if (!isWatching) return;
 
-    const now = Date.now() / 1000; // Current time in seconds
+    const now = Date.now();
     const todayAiringTimes: number[] = [];
 
-    // Find all airing times for today's episodes that haven't aired yet
     [...airingMap].forEach(([subjectId, weekday]) => {
       if (weekday === today) {
         const airingTime = airingTimeMap.get(subjectId);
-        if (airingTime && airingTime.airingAt > now) {
-          todayAiringTimes.push(airingTime.airingAt);
+        if (airingTime) {
+          const nextAiringAt = getNextWeeklyAiringAt(
+            weekday,
+            getAiringMinuteOfDay(airingTime.airingAt),
+            now,
+          );
+          if (nextAiringAt !== null) todayAiringTimes.push(nextAiringAt);
         }
       }
     });
@@ -881,7 +892,7 @@ export default function CollectionsPage() {
 
     // Find the next airing time
     const nextAiringAt = Math.min(...todayAiringTimes);
-    const delayMs = Math.max(1000, (nextAiringAt - now) * 1000 + 1000);
+    const delayMs = Math.max(1000, nextAiringAt - now + 1000);
 
     const timer = window.setTimeout(() => {
       // Force re-render by invalidating episodes query
