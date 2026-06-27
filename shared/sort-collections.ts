@@ -13,7 +13,7 @@ function getTotalEp(c: UserCollection): number {
   return c.subject.total_episodes || c.subject.eps || 0;
 }
 
-export type SortedGroup = "airing_not_caught" | "finished" | "airing_caught";
+export type SortedGroup = "airing_not_caught" | "finished" | "completed" | "airing_caught";
 
 export interface CollectionMeta {
   group: SortedGroup;
@@ -31,7 +31,7 @@ export function getCollectionMeta(
   const weekday = airingMap.get(c.subject_id) ?? c.subject.air_weekday ?? 0;
   const isAiring = airingMap.has(c.subject_id);
   const totalEp = getTotalEp(c);
-  let knownAiredEp = isAiring ? airedEpMap.get(c.subject_id) : totalEp;
+  const knownAiredEp = isAiring ? airedEpMap.get(c.subject_id) : totalEp;
 
   const airedEp = knownAiredEp ?? Math.max(1, c.ep_status);
 
@@ -55,7 +55,9 @@ export function getCollectionMeta(
   }
 
   let group: SortedGroup;
-  if (!isAiring && c.ep_status === 0) {
+  if (totalEp > 0 && c.ep_status >= totalEp) {
+    group = "completed";
+  } else if (!isAiring && c.ep_status === 0) {
     group = "finished";
   } else if (isAiring && c.ep_status < effectiveAiredEp) {
     group = "airing_not_caught";
@@ -85,12 +87,15 @@ export function sortCollections(
   const groupI: UserCollection[] = [];
   const groupII: UserCollection[] = [];
   const groupIII: UserCollection[] = [];
+  const groupIV: UserCollection[] = [];
 
   for (const c of collections) {
     const { group } = getCollectionMeta(c, airingMap, airedEpMap, today, airingTimeMap);
 
     if (group === "airing_not_caught") {
       groupI.push(c);
+    } else if (group === "completed") {
+      groupIV.push(c);
     } else if (group === "airing_caught") {
       groupIII.push(c);
     } else {
@@ -113,7 +118,7 @@ export function sortCollections(
   const groupIIa = groupII.filter((c) => c.ep_status > 0);
   const groupIIb = groupII.filter((c) => c.ep_status === 0);
 
-  return [...groupI, ...groupIIa, ...groupIIb, ...groupIII];
+  return [...groupI, ...groupIIa, ...groupIIb, ...groupIII, ...groupIV];
 }
 
 export function getDisplayLabel(
@@ -173,6 +178,10 @@ export function getDisplayLabel(
 
   if (group === "airing_not_caught" || (group === "finished" && c.ep_status > 0)) {
     return `继续观看 ${c.ep_status + 1}`;
+  }
+
+  if (group === "completed") {
+    return "已看完";
   }
 
   if (group === "finished" && c.ep_status === 0) {
