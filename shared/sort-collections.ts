@@ -5,6 +5,14 @@ export function getTodayBangumiWeekday(): number {
   return jsDay === 0 ? 7 : jsDay;
 }
 
+function getTodayDateKey(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function weekdayOffset(weekday: number, today: number): number {
   return (weekday - today + 7) % 7;
 }
@@ -13,7 +21,7 @@ function getTotalEp(c: UserCollection): number {
   return c.subject.eps || c.subject.total_episodes || 0;
 }
 
-export type SortedGroup = "airing_not_caught" | "finished" | "completed" | "airing_caught";
+export type SortedGroup = "airing_not_caught" | "finished" | "completed" | "airing_caught" | "pre_air";
 
 export interface CollectionMeta {
   group: SortedGroup;
@@ -55,7 +63,11 @@ export function getCollectionMeta(
   }
 
   let group: SortedGroup;
-  if (totalEp > 0 && c.ep_status >= totalEp) {
+  const todayDateKey = getTodayDateKey();
+
+  if (isAiring && c.subject.date && c.subject.date > todayDateKey) {
+    group = "pre_air";
+  } else if (totalEp > 0 && c.ep_status >= totalEp) {
     group = "completed";
   } else if (!isAiring && c.ep_status === 0) {
     group = "finished";
@@ -88,6 +100,7 @@ export function sortCollections(
   const groupII: UserCollection[] = [];
   const groupIII: UserCollection[] = [];
   const groupIV: UserCollection[] = [];
+  const groupV: UserCollection[] = [];
 
   for (const c of collections) {
     const { group } = getCollectionMeta(c, airingMap, airedEpMap, today, airingTimeMap);
@@ -98,6 +111,8 @@ export function sortCollections(
       groupIV.push(c);
     } else if (group === "airing_caught") {
       groupIII.push(c);
+    } else if (group === "pre_air") {
+      groupV.push(c);
     } else {
       groupII.push(c);
     }
@@ -115,10 +130,12 @@ export function sortCollections(
     return weekdayOffset(wa, today) - weekdayOffset(wb, today);
   });
 
+  groupV.sort((a, b) => (a.subject.date || "").localeCompare(b.subject.date || ""));
+
   const groupIIa = groupII.filter((c) => c.ep_status > 0);
   const groupIIb = groupII.filter((c) => c.ep_status === 0);
 
-  return [...groupI, ...groupIIa, ...groupIIb, ...groupIII, ...groupIV];
+  return [...groupI, ...groupIIa, ...groupIIb, ...groupIII, ...groupV, ...groupIV];
 }
 
 export function getDisplayLabel(
@@ -129,6 +146,18 @@ export function getDisplayLabel(
   airingTimeMap?: Map<number, { airingAt: number; episode: number }>,
 ): string | null {
   const { group } = getCollectionMeta(c, airingMap, airedEpMap, today, airingTimeMap);
+
+  if (group === "pre_air") {
+    if (c.subject.date) {
+      const parts = c.subject.date.split("-");
+      if (parts.length === 3) {
+        const m = parseInt(parts[1], 10);
+        const d = parseInt(parts[2], 10);
+        return `${m}月${d}日 开播`;
+      }
+    }
+    return "即将开播";
+  }
 
   if (group === "airing_caught") {
     const { weekday, airedEp } = getCollectionMeta(c, airingMap, airedEpMap, today, airingTimeMap);
