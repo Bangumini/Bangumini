@@ -23,6 +23,7 @@ import {
   deleteCachedValue,
   deleteCachedValuesByPrefix,
   readCachedCollection,
+  readCachedSubjectDeep,
   readCachedValue,
   readCachedValueEntry,
   readCachedValues,
@@ -278,6 +279,18 @@ async function fetchAiredEpisodeCount(subjectId: number, todayDateKey: string) {
   return mainEps.filter((ep) => ep.airdate && ep.airdate <= todayDateKey).length;
 }
 
+async function backfillTotalEpisodesFromCache(collections: UserCollection[]) {
+  for (const c of collections) {
+    const s = c.subject;
+    if ((s.total_episodes ?? 0) > 0 || (s.eps ?? 0) > 0) continue;
+    const cached = await readCachedSubjectDeep(s.id);
+    if (cached) {
+      if (cached.total_episodes) s.total_episodes = cached.total_episodes;
+      else if (cached.eps) s.eps = cached.eps;
+    }
+  }
+}
+
 async function fetchAndCacheCollections(
   collectionType: string,
   uname: string,
@@ -287,6 +300,7 @@ async function fetchAndCacheCollections(
     ? await getAllUserCollections({ username: uname, type: 3 })
     : await getUserCollections({ username: uname, type: parseInt(collectionType), limit: 100 });
 
+  await backfillTotalEpisodesFromCache(result.data);
   await writeCachedSubjectPreviews(result.data.map((item) => item.subject));
   await writeCachedValue(collectionsCacheKey, result);
   return result;
@@ -594,6 +608,7 @@ export default function CollectionsPage() {
       const cached = await readCachedValueEntry<PagedResponse<UserCollection>>(collectionsCacheKey);
       if (cached) {
         setQuerySource("collections", collectionsCacheKey, "cache");
+        await backfillTotalEpisodesFromCache(cached.payload.data);
         const refreshTask = refreshQueryDataIfChanged({
           queryClient,
           queryKey: collectionsQueryKey,
@@ -688,15 +703,35 @@ export default function CollectionsPage() {
     [rawCollections, airingMap],
   );
 
+  const staleAiringIds = useMemo(
+    () => isWatching
+      ? rawCollections
+          .filter((item) => !airingMap.has(item.subject_id))
+          .filter((item) => {
+            const total = item.subject.eps || item.subject.total_episodes || 0;
+            return item.ep_status > 0 && (total === 0 || item.ep_status < total);
+          })
+          .map((item) => item.subject_id)
+      : [],
+    [rawCollections, airingMap, isWatching],
+  );
+
+  const allEpisodeIds = useMemo(
+    () => [...new Set([...airingIds, ...staleAiringIds])],
+    [airingIds, staleAiringIds],
+  );
+
   const airingTimeTargets = useMemo(() => {
-    if (!isWatching || airingMap.size === 0) return [];
+    if (!isWatching) return [];
+    if (airingIds.length === 0 && staleAiringIds.length === 0) return [];
+    const targetIds = new Set([...airingIds, ...staleAiringIds]);
     return rawCollections
-      .filter((item) => airingMap.has(item.subject_id))
+      .filter((item) => targetIds.has(item.subject_id) && item.subject.name)
       .map((item) => ({
         subjectId: item.subject_id,
         name: item.subject.name,
       }));
-  }, [rawCollections, airingMap, isWatching]);
+  }, [rawCollections, airingIds, staleAiringIds, isWatching]);
 
   const airingTimeTargetKey = airingTimeTargets.map((item) => item.subjectId).join(",");
 
@@ -767,9 +802,9 @@ export default function CollectionsPage() {
       return `${id}:${airingTime ? getAiringMinuteOfDay(airingTime.airingAt) : ""}`;
     })
     .join(",");
-  const episodesQueryKey = ["episodes", todayDateKey, airingIds.join(","), airingTimeSignature];
-  const episodesQuerySourceKey = `${todayDateKey}|${airingIds.join(",")}|${airingTimeSignature}`;
-  const shouldLoadEpisodes = isWatching && rawCollections.length > 0 && airingIds.length > 0;
+  const episodesQueryKey = ["episodes", todayDateKey, allEpisodeIds.join(","), airingTimeSignature];
+  const episodesQuerySourceKey = `${todayDateKey}|${allEpisodeIds.join(",")}|${airingTimeSignature}`;
+  const shouldLoadEpisodes = isWatching && rawCollections.length > 0 && allEpisodeIds.length > 0;
 
   const {
     data: episodeMap,
@@ -779,14 +814,14 @@ export default function CollectionsPage() {
   } = useQuery({
     queryKey: episodesQueryKey,
     queryFn: async () => {
-      if (airingIds.length === 0) return new Map<number, number>();
+      if (allEpisodeIds.length === 0) return new Map<number, number>();
 
       const now = getCurrentTimestamp();
       const map = new Map<number, number>();
       const cachedBySubjectId = new Map<number, EpisodeCountCache>();
       const idsToFetch: number[] = [];
 
-      for (const id of airingIds) {
+      for (const id of allEpisodeIds) {
         const weekday = airingMap.get(id);
         const currentAiringMinuteOfDay = (() => {
           const airingTime = airingTimeMap.get(id);

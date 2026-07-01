@@ -345,7 +345,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 
   useEffect(() => {
     if (!subject) return;
-    if ((subject.total_episodes ?? 0) > 0) return;
 
     const timer = window.setTimeout(() => {
       setLoadEpisodeData(true);
@@ -398,7 +397,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 
   const { data: episodeData } = useQuery({
     queryKey: episodesQueryKey,
-    enabled: Boolean(subject) && (loadEpisodeData || (subject?.total_episodes ?? 0) <= 0),
+    enabled: Boolean(subject) && loadEpisodeData,
     queryFn: loadEpisodesFromCacheOrNetwork,
   });
 
@@ -480,7 +479,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 
   const sorted = episodeData?.data?.slice().sort((a, b) => a.sort - b.sort) ?? [];
   const mainEps = sorted.filter((e) => e.type === 0);
-  const totalEp = mainEps.length > 0 ? mainEps.length : (subject?.eps ?? 0);
+  const totalEp = mainEps.length > 0 ? mainEps.length : (subject?.total_episodes || subject?.eps || 0);
   const currentEp = collection?.ep_status ?? 0;
   const currentColType = collection?.type;
   const displayTarget = targetEp ?? currentEp;

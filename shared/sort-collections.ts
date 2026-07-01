@@ -18,7 +18,14 @@ function weekdayOffset(weekday: number, today: number): number {
 }
 
 function getTotalEp(c: UserCollection): number {
-  return c.subject.eps || c.subject.total_episodes || 0;
+  return c.subject.total_episodes || c.subject.eps || 0;
+}
+
+function getWeekdayFromDate(dateStr: string): number {
+  const parts = dateStr.split("-").map(Number);
+  if (parts.length !== 3) return 0;
+  const jsDay = new Date(parts[0], parts[1] - 1, parts[2]).getDay();
+  return jsDay === 0 ? 7 : jsDay;
 }
 
 export type SortedGroup = "airing_not_caught" | "finished" | "completed" | "airing_caught" | "pre_air";
@@ -36,16 +43,19 @@ export function getCollectionMeta(
   today: number,
   airingTimeMap?: Map<number, { airingAt: number; episode: number }>,
 ): CollectionMeta {
-  const weekday = airingMap.get(c.subject_id) ?? c.subject.air_weekday ?? 0;
-  const isAiring = airingMap.has(c.subject_id);
+  const weekday = airingMap.get(c.subject_id) ?? c.subject.air_weekday ?? (c.subject.date ? getWeekdayFromDate(c.subject.date) : 0);
   const totalEp = getTotalEp(c);
+  const hasRemainingEps = totalEp > 0
+    ? (c.ep_status > 0 && c.ep_status < totalEp)
+    : c.ep_status > 0;
+  const isAiring = airingMap.has(c.subject_id) || hasRemainingEps;
   const knownAiredEp = isAiring ? airedEpMap.get(c.subject_id) : totalEp;
 
   const airedEp = knownAiredEp ?? Math.max(1, c.ep_status);
 
   // Check if today's episode has actually aired yet
   let effectiveAiredEp = airedEp;
-  if (isAiring && weekday === today && airingTimeMap) {
+  if (isAiring && weekday > 0 && weekday === today && airingTimeMap) {
     const airingTime = airingTimeMap.get(c.subject_id);
     if (airingTime) {
       // Extract time-of-day from the stored airing time (assuming weekly same-time schedule)
