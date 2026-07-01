@@ -659,10 +659,13 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
   }
 
   const handleBack = useCallback(() => {
-    const state = location.state as { fromCollections?: boolean; fromCalendar?: boolean; fromNextSeason?: boolean; page?: number; focusedIndex?: number; currentDay?: number | "tba" } | null;
+    const state = location.state as { fromCollections?: boolean; fromCalendar?: boolean; fromNextSeason?: boolean; page?: number; focusedIndex?: number; currentDay?: number | "tba"; collectionType?: string; searchText?: string } | null;
 
     if (state?.fromCollections) {
-      navigate("/collections", { state: { fromSubject: true, subjectId, page: state.page, focusedIndex: state.focusedIndex } });
+      const params = new URLSearchParams();
+      params.set("type", state.collectionType ?? "3");
+      if (state.searchText) params.set("filter", state.searchText);
+      navigate(`/collections?${params.toString()}`, { state: { fromSubject: true, subjectId, page: state.page, focusedIndex: state.focusedIndex } });
     } else if (state?.fromCalendar) {
       navigate("/calendar", { state: { fromSubject: true, subjectId, currentDay: state.currentDay, focusedIndex: state.focusedIndex } });
     } else if (state?.fromNextSeason) {

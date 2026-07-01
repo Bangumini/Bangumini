@@ -77,6 +77,8 @@ type CollectionsLocationState = {
   subjectId?: number;
   page?: number;
   focusedIndex?: number;
+  collectionType?: string;
+  searchText?: string;
 };
 type CommittedCollectionsState = {
   scopeKey: string;
@@ -1147,7 +1149,7 @@ export default function CollectionsPage() {
   function openSubject(subjectId: number) {
     writePageState(collectionType, searchText, page, focusedIndex);
     navigate(`/subject/${subjectId}`, {
-      state: { fromCollections: true, page, focusedIndex },
+      state: { fromCollections: true, page, focusedIndex, collectionType, searchText },
     });
   }
 
