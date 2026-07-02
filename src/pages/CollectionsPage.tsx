@@ -1238,14 +1238,14 @@ export default function CollectionsPage() {
       key: "ArrowUp",
       when: () => paged.length > 0,
       handler: () => {
-        setFocusedIndex((i) => Math.max(0, i - 1));
+        setFocusedIndex((i) => i <= 0 ? paged.length - 1 : i - 1);
       },
     },
     {
       key: "ArrowDown",
       when: () => paged.length > 0,
       handler: () => {
-        setFocusedIndex((i) => Math.min(paged.length - 1, i + 1));
+        setFocusedIndex((i) => i >= paged.length - 1 ? 0 : i + 1);
       },
     },
     {

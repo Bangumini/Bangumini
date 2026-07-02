@@ -105,7 +105,7 @@ export default function SearchPage() {
       mod: false,
       when: () => subjects.length > 0,
       handler: () => {
-        setFocusedIndex((i) => Math.max(0, i - 1));
+        setFocusedIndex((i) => i <= 0 ? subjects.length - 1 : i - 1);
       },
     },
     {
@@ -113,7 +113,7 @@ export default function SearchPage() {
       mod: false,
       when: () => subjects.length > 0,
       handler: () => {
-        setFocusedIndex((i) => Math.min(subjects.length - 1, i + 1));
+        setFocusedIndex((i) => i >= subjects.length - 1 ? 0 : i + 1);
       },
     },
     {

@@ -196,14 +196,14 @@ export default function CalendarPage() {
       key: "ArrowUp",
       when: () => displayItems.length > 0,
       handler: () => {
-        setFocusedIndex((i) => Math.max(0, i - 1));
+        setFocusedIndex((i) => i <= 0 ? displayItems.length - 1 : i - 1);
       },
     },
     {
       key: "ArrowDown",
       when: () => displayItems.length > 0,
       handler: () => {
-        setFocusedIndex((i) => Math.min(displayItems.length - 1, i + 1));
+        setFocusedIndex((i) => i >= displayItems.length - 1 ? 0 : i + 1);
       },
     },
     {

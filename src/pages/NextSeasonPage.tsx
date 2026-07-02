@@ -562,14 +562,14 @@ export default function NextSeasonPage() {
       key: "ArrowUp",
       when: () => currentItems.length > 0,
       handler: () => {
-        setFocusedIndex((i) => Math.max(0, i - 1));
+        setFocusedIndex((i) => i <= 0 ? currentItems.length - 1 : i - 1);
       },
     },
     {
       key: "ArrowDown",
       when: () => currentItems.length > 0,
       handler: () => {
-        setFocusedIndex((i) => Math.min(currentItems.length - 1, i + 1));
+        setFocusedIndex((i) => i >= currentItems.length - 1 ? 0 : i + 1);
       },
     },
     {
