@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nickolay/tauri-docs/refs/heads/v2/docs/.vitepress/theme/schemas/config.schema.json",
   "productName": "Bangumini",
-  "version": "1.1.14",
+  "version": "1.1.15",
   "identifier": "com.bangumini.app",
   "build": {
     "frontendDist": "../dist",
@@ -52,7 +52,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdGMDVDODIxRjczRDJFRkMKUldUOExqMzNJY2dGZnp1ZUZMbG9HZFR3Z0tYZE9mYmxSQXhiWXMzUldRRE81SVIzS3JrZ01kUGkK",
       "endpoints": [
-        "https://github.com/Flartiny/Bangumini/releases/latest/download/latest.json"
+        "https://github.com/Bangumini/Bangumini/releases/latest/download/latest.json"
       ]
     }
   }

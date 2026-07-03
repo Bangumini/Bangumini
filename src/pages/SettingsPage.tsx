@@ -50,12 +50,12 @@ const getPortableDownloadUrl = (version: string) => {
   const normalizedVersion = version.trim();
 
   if (!normalizedVersion) {
-    return "https://github.com/Flartiny/Bangumini/releases/latest";
+    return "https://github.com/Bangumini/Bangumini/releases/latest";
   }
 
   const plainVersion = normalizedVersion.replace(/^v/i, "");
   const tagVersion = `v${plainVersion}`;
-  return `https://github.com/Flartiny/Bangumini/releases/download/${tagVersion}/Bangumini_${plainVersion}_portable.zip`;
+  return `https://github.com/Bangumini/Bangumini/releases/download/${tagVersion}/Bangumini_${plainVersion}_portable.zip`;
 };
 
 export default function SettingsPage() {
@@ -407,7 +407,7 @@ export default function SettingsPage() {
       <section>
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">关于</h3>
         <button
-          onClick={() => openUrl("https://github.com/Flartiny/Bangumini")}
+          onClick={() => openUrl("https://github.com/Bangumini/Bangumini")}
           className="flex items-center gap-2 text-[13px] text-fg-secondary hover:text-accent transition-colors"
         >
           <GithubIcon size={16} />

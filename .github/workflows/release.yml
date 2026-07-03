@@ -59,7 +59,7 @@ jobs:
               platforms = @{
                 "windows-x86_64" = @{
                   signature = $sigContent
-                  url = "https://github.com/Flartiny/Bangumini/releases/download/v$version/$($nsisExe.Name)"
+                  url = "https://github.com/Bangumini/Bangumini/releases/download/v$version/$($nsisExe.Name)"
                 }
               }
             }
