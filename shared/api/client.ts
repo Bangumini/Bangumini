@@ -13,10 +13,12 @@ export function setTokenProvider(fn: () => Promise<string>) {
   tokenProvider = fn;
 }
 
+declare const __APP_VERSION__: string;
+
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const token = tokenProvider ? await tokenProvider() : "";
   const headers: Record<string, string> = {
-    "User-Agent": "RaycastBangumi/1.0",
+    "User-Agent": `Bangumini/${__APP_VERSION__}`,
     Accept: "application/json",
   };
   if (token) {
