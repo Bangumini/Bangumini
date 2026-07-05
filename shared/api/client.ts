@@ -1,4 +1,4 @@
-import type { CalendarItem, Episode, PagedResponse, RelatedCharacter, RelatedPerson, SearchResponse, Subject, User, UserCollection } from "./types";
+import type { CalendarItem, Episode, PagedResponse, RelatedCharacter, RelatedPerson, SearchResponse, Subject, SubjectRelation, User, UserCollection } from "./types";
 
 const BASE_URL = "https://api.bgm.tv";
 
@@ -166,6 +166,11 @@ export async function getSubjectPersons(subjectId: number): Promise<RelatedPerso
 /** GET /v0/subjects/{id}/characters — 获取条目关联角色 */
 export async function getSubjectCharacters(subjectId: number): Promise<RelatedCharacter[]> {
   return request<RelatedCharacter[]>(`/v0/subjects/${subjectId}/characters`);
+}
+
+/** GET /v0/subjects/{id}/subjects — 获取条目关联条目 (OP/ED/OST等) */
+export async function getSubjectRelations(subjectId: number): Promise<SubjectRelation[]> {
+  return request<SubjectRelation[]>(`/v0/subjects/${subjectId}/subjects`);
 }
 
 /** GET /v0/episodes — 获取条目剧集列表 */

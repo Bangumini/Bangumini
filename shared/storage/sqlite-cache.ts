@@ -5,6 +5,7 @@ import type {
   RelatedCharacter,
   RelatedPerson,
   Subject,
+  SubjectRelation,
   SubjectSmall,
   UserCollection,
 } from "@shared/api/types";
@@ -587,6 +588,21 @@ export function readCachedCharactersWithin(
 
 export function writeCachedCharacters(subjectId: number, characters: RelatedCharacter[]) {
   return writeSubjectEntry(subjectId, "characters", characters);
+}
+
+export function readCachedRelations(subjectId: number): Promise<SubjectRelation[] | null> {
+  return readSubjectEntry<SubjectRelation[]>(subjectId, "relations");
+}
+
+export function readCachedRelationsWithin(
+  subjectId: number,
+  maxAgeMs: number,
+): Promise<SubjectRelation[] | null> {
+  return readSubjectEntryWithin<SubjectRelation[]>(subjectId, "relations", maxAgeMs);
+}
+
+export function writeCachedRelations(subjectId: number, relations: SubjectRelation[]) {
+  return writeSubjectEntry(subjectId, "relations", relations);
 }
 
 export async function readCachedValue<T>(cacheKey: string): Promise<T | null> {

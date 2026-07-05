@@ -26,6 +26,11 @@ export interface SubjectSmall {
   rank: number;
 }
 
+export interface InfoboxItem {
+  key: string;
+  value: string | { v: string }[];
+}
+
 export interface SubjectTag {
   name: string;
   count: number;
@@ -45,6 +50,7 @@ export interface Subject {
   date: string;
   air_weekday?: number;
   tags?: SubjectTag[];
+  infobox?: InfoboxItem[];
 }
 
 export interface Weekday {
@@ -133,6 +139,17 @@ export interface RelatedPerson {
   relation: string;
   career: string[];
   short_summary: string;
+}
+
+// ---------- Subject Relations (OP/ED/OST) ----------
+
+export interface SubjectRelation {
+  id: number;
+  type: number;
+  name: string;
+  name_cn: string;
+  images?: BangumiImage;
+  relation: string;
 }
 
 // ---------- Characters ----------

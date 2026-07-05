@@ -1,9 +1,10 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import {
   getSubject,
+  getSubjectRelations,
   getSubjectPersons,
   getSubjectCharacters,
   getEpisodes,
@@ -12,7 +13,7 @@ import {
   postUserCollection,
 } from "@shared/api/client";
 import { CollectionTypeLabel } from "@shared/api/types";
-import type { CollectionType, Episode, PagedResponse, UserCollection } from "@shared/api/types";
+import type { CollectionType, Episode, PagedResponse, SubjectRelation, UserCollection } from "@shared/api/types";
 import type { QueryClient } from "@tanstack/react-query";
 import {
   deleteCachedCollection,
@@ -24,6 +25,8 @@ import {
   readCachedEpisodesWithin,
   readCachedPersons,
   readCachedPersonsWithin,
+  readCachedRelations,
+  readCachedRelationsWithin,
   readCachedSubjectDeepWithin,
   readCachedSubjectDeep,
   readCachedValue,
@@ -31,6 +34,7 @@ import {
   writeCachedCollection,
   writeCachedEpisodes,
   writeCachedPersons,
+  writeCachedRelations,
   writeCachedSubject,
   writeCachedValue,
 } from "@shared/storage/sqlite-cache";
@@ -205,6 +209,20 @@ function refreshQueryInBackground<T>(
   })();
 }
 
+function extractArtist(infobox?: { key: string; value: string | { v: string }[] }[]): string | null {
+  if (!infobox) return null;
+  const artist = infobox.find((i) => i.key === "艺术家");
+  if (artist && typeof artist.value === "string") return artist.value;
+  const lyricist = infobox.find((i) => i.key === "作词");
+  const composer = infobox.find((i) => i.key === "作曲");
+  const parts: string[] = [];
+  if (lyricist && typeof lyricist.value === "string") parts.push(lyricist.value);
+  if (composer && typeof composer.value === "string" && (parts.length === 0 || composer.value !== parts[0])) {
+    parts.push(composer.value);
+  }
+  return parts.length > 0 ? parts.join(" / ") : null;
+}
+
 function getSummaryBlocks(summary: string): SummaryBlock[] {
   const blocks: SummaryBlock[] = [];
 
@@ -258,6 +276,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
   const personsQueryKey = ["persons", subjectId] as const;
   const charactersQueryKey = ["characters", subjectId] as const;
   const episodesQueryKey = ["episodes", subjectId] as const;
+  const relationsQueryKey = ["relations", subjectId] as const;
 
   async function fetchSubjectFromNetwork() {
     const result = await getSubject(subjectId);
@@ -306,6 +325,53 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       queryFn: loadEpisodesFromCacheOrNetwork,
     });
     return result;
+  }
+
+  async function loadRelations(subjectId: number) {
+    const cached = await readCachedRelationsWithin(subjectId, DETAIL_CACHE_MAX_AGE);
+    if (cached) return cached;
+
+    const stale = await readCachedRelations(subjectId);
+    if (stale) {
+      refreshQueryInBackground(queryClient, ["relations", subjectId],
+        () => getSubjectRelations(subjectId).then(r => writeCachedRelations(subjectId, r)));
+      return stale;
+    }
+
+    try {
+      const relations = await getSubjectRelations(subjectId);
+      await writeCachedRelations(subjectId, relations);
+      return relations;
+    } catch {
+      return readCachedRelations(subjectId);
+    }
+  }
+
+  async function loadArtistMap(relations: SubjectRelation[]): Promise<Record<number, string | null>> {
+    const musicRelations = relations.filter((r) => r.type === 3);
+    const map: Record<number, string | null> = {};
+
+    const results = await Promise.allSettled(
+      musicRelations.map(async (r) => {
+        const cached = await readCachedSubjectDeep(r.id);
+        if (cached?.infobox) {
+          return { id: r.id, artist: extractArtist(cached.infobox) };
+        }
+        try {
+          const subject = await getSubject(r.id);
+          return { id: r.id, artist: extractArtist(subject.infobox) };
+        } catch {
+          return { id: r.id, artist: null };
+        }
+      }),
+    );
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        map[result.value.id] = result.value.artist;
+      }
+    }
+    return map;
   }
 
   const { data: subject } = useQuery({
@@ -400,6 +466,36 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
     enabled: Boolean(subject) && loadEpisodeData,
     queryFn: loadEpisodesFromCacheOrNetwork,
   });
+
+  const relationsQuery = useQuery({
+    queryKey: relationsQueryKey,
+    enabled: loadSecondaryDetailData && Boolean(subject),
+    queryFn: () => loadRelations(subjectId),
+  });
+
+  const songGroups = useMemo(() => {
+    const relations = relationsQuery.data;
+    if (!relations) return null;
+    const ops: SubjectRelation[] = [];
+    const eds: SubjectRelation[] = [];
+    const osts: SubjectRelation[] = [];
+    const characterSongs: SubjectRelation[] = [];
+    for (const r of relations) {
+      if (r.relation === "片头曲") ops.push(r);
+      else if (r.relation === "片尾曲") eds.push(r);
+      else if (r.relation === "原声集") osts.push(r);
+      else if (r.relation === "角色歌") characterSongs.push(r);
+    }
+    return { ops, eds, osts, characterSongs };
+  }, [relationsQuery.data]);
+
+  const artistMapQuery = useQuery({
+    queryKey: ["relations-artists", subjectId, relationsQuery.dataUpdatedAt],
+    enabled: !!relationsQuery.data && relationsQuery.data.length > 0,
+    queryFn: () => loadArtistMap(relationsQuery.data!),
+    staleTime: DETAIL_CACHE_MAX_AGE,
+  });
+  const artistMap = useMemo(() => artistMapQuery.data ?? {}, [artistMapQuery.data]);
 
   const collectionQueryKey = ["collection", subjectId] as const;
 
@@ -893,6 +989,100 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
                 ))}
               </div>
             </section>
+          )}
+
+          {relationsQuery.data != null && songGroups && (
+            Object.values(songGroups).some(g => g.length > 0) ? (
+              <section>
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">OP/ED/OST</h3>
+                <div className="space-y-3">
+                  {songGroups.ops.length > 0 && (
+                    <div>
+                      <span className="text-[11px] text-fg-tertiary/70">片头曲 (OP)</span>
+                      <div className="space-y-1 mt-1">
+                        {songGroups.ops.map((r) => (
+                          <div key={r.id} className="text-[13px] leading-relaxed text-fg-secondary">
+                            <span
+                              className="cursor-pointer hover:text-accent transition-colors"
+                              onClick={() => copyText(r.name_cn || r.name)}
+                            >
+                              {r.name_cn || r.name}
+                              {r.name_cn && r.name ? ` / ${r.name}` : ""}
+                            </span>
+                            {artistMap[r.id] ? (
+                              <span className="text-fg-tertiary"> · {artistMap[r.id]}</span>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {songGroups.eds.length > 0 && (
+                    <div>
+                      <span className="text-[11px] text-fg-tertiary/70">片尾曲 (ED)</span>
+                      <div className="space-y-1 mt-1">
+                        {songGroups.eds.map((r) => (
+                          <div key={r.id} className="text-[13px] leading-relaxed text-fg-secondary">
+                            <span
+                              className="cursor-pointer hover:text-accent transition-colors"
+                              onClick={() => copyText(r.name_cn || r.name)}
+                            >
+                              {r.name_cn || r.name}
+                              {r.name_cn && r.name ? ` / ${r.name}` : ""}
+                            </span>
+                            {artistMap[r.id] ? (
+                              <span className="text-fg-tertiary"> · {artistMap[r.id]}</span>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {songGroups.osts.length > 0 && (
+                    <div>
+                      <span className="text-[11px] text-fg-tertiary/70">原声集 (OST)</span>
+                      <div className="space-y-1 mt-1">
+                        {songGroups.osts.map((r) => (
+                          <div key={r.id} className="text-[13px] leading-relaxed text-fg-secondary">
+                            <span
+                              className="cursor-pointer hover:text-accent transition-colors"
+                              onClick={() => copyText(r.name_cn || r.name)}
+                            >
+                              {r.name_cn || r.name}
+                              {r.name_cn && r.name ? ` / ${r.name}` : ""}
+                            </span>
+                            {artistMap[r.id] ? (
+                              <span className="text-fg-tertiary"> · {artistMap[r.id]}</span>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {songGroups.characterSongs.length > 0 && (
+                    <div>
+                      <span className="text-[11px] text-fg-tertiary/70">角色歌</span>
+                      <div className="space-y-1 mt-1">
+                        {songGroups.characterSongs.map((r) => (
+                          <div key={r.id} className="text-[13px] leading-relaxed text-fg-secondary">
+                            <span
+                              className="cursor-pointer hover:text-accent transition-colors"
+                              onClick={() => copyText(r.name_cn || r.name)}
+                            >
+                              {r.name_cn || r.name}
+                              {r.name_cn && r.name ? ` / ${r.name}` : ""}
+                            </span>
+                            {artistMap[r.id] ? (
+                              <span className="text-fg-tertiary"> · {artistMap[r.id]}</span>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </section>
+            ) : null
           )}
 
           {(characters ?? []).length > 0 && (
