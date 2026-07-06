@@ -161,6 +161,29 @@ function readLegacyAiringCache(subjectId: number): AiringTime | null {
   }
 }
 
+async function readCachedAiringTimes(subjectIds: number[]) {
+  const uniqueIds = [...new Set(subjectIds)];
+  if (uniqueIds.length === 0) return new Map<number, AiringTime>();
+
+  const cacheKeysBySubjectId = new Map(
+    uniqueIds.map((subjectId) => [subjectId, `${AIRING_CACHE_PREFIX}${subjectId}`]),
+  );
+  const cacheKeys = [...cacheKeysBySubjectId.values()];
+  const [cachedByKey, staleByKey] = await Promise.all([
+    readCachedValuesWithin<AiringTime>(cacheKeys, AIRING_TIME_CACHE_MAX_AGE),
+    readCachedValues<AiringTime>(cacheKeys),
+  ]);
+
+  const map = new Map<number, AiringTime>();
+  for (const subjectId of uniqueIds) {
+    const cacheKey = cacheKeysBySubjectId.get(subjectId)!;
+    const cached = cachedByKey.get(cacheKey) ?? staleByKey.get(cacheKey);
+    if (cached) map.set(subjectId, cached);
+  }
+
+  return map;
+}
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -696,6 +719,26 @@ export default function CollectionsPage() {
 
   const airingMap = useMemo(() => buildAiringMap(calendar), [calendar]);
 
+  const airingTimeCacheIds = useMemo(
+    () => isWatching ? [...new Set(rawCollections.map((item) => item.subject_id))] : [],
+    [rawCollections, isWatching],
+  );
+  const airingTimeCacheKey = airingTimeCacheIds.join(",");
+  const shouldReadAiringTimeCache = isWatching && airingTimeCacheIds.length > 0;
+
+  const {
+    data: cachedAiringTimeMap,
+    error: cachedAiringTimeError,
+    dataUpdatedAt: cachedAiringTimeUpdatedAt,
+    isFetched: cachedAiringTimeFetched,
+  } = useQuery({
+    queryKey: ["anilist-airing-times-cache", airingTimeCacheKey],
+    queryFn: () => readCachedAiringTimes(airingTimeCacheIds),
+    enabled: shouldReadAiringTimeCache,
+    staleTime: 5 * 60 * 1000,
+    refetchOnMount: shouldSuppressRefetch ? false : true,
+  });
+
   const airingIds = useMemo(
     () => rawCollections
       .filter((item) => airingMap.has(item.subject_id))
@@ -740,34 +783,18 @@ export default function CollectionsPage() {
     data: airingTimeMapData,
     error: airingTimeError,
     dataUpdatedAt: airingTimeUpdatedAt,
-    isFetching: isAiringTimeFetching,
   } = useQuery({
     queryKey: ["anilist-airing-times", airingTimeTargetKey],
     queryFn: async () => {
-      const map = new Map<number, AiringTime>();
-      const staleBySubjectId = new Map<number, AiringTime>();
+      const map = new Map<number, AiringTime>(cachedAiringTimeMap ?? EMPTY_AIRING_TIME_MAP);
       let loadedFromNetwork = false;
-      const cacheKeysBySubjectId = new Map(
-        airingTimeTargets.map((item) => [item.subjectId, `${AIRING_CACHE_PREFIX}${item.subjectId}`]),
-      );
-      const cacheKeys = [...cacheKeysBySubjectId.values()];
-      const cachedByKey = await readCachedValuesWithin<AiringTime>(cacheKeys, AIRING_TIME_CACHE_MAX_AGE);
-      const staleByKey = await readCachedValues<AiringTime>(cacheKeys);
 
       for (const item of airingTimeTargets) {
-        const cacheKey = cacheKeysBySubjectId.get(item.subjectId)!;
-        const cached = cachedByKey.get(cacheKey);
-        if (cached) {
-          map.set(item.subjectId, cached);
-          continue;
-        }
-
-        const stale = staleByKey.get(cacheKey);
-        if (stale) staleBySubjectId.set(item.subjectId, stale);
+        if (map.has(item.subjectId)) continue;
 
         const legacy = readLegacyAiringCache(item.subjectId);
         if (legacy) {
-          await writeCachedValue(cacheKey, legacy);
+          await writeCachedValue(`${AIRING_CACHE_PREFIX}${item.subjectId}`, legacy);
           map.set(item.subjectId, legacy);
         }
       }
@@ -781,21 +808,27 @@ export default function CollectionsPage() {
         if (result) {
           await writeCachedValue(`${AIRING_CACHE_PREFIX}${item.subjectId}`, result);
           map.set(item.subjectId, result);
-        } else {
-          const stale = staleBySubjectId.get(item.subjectId);
-          if (stale) map.set(item.subjectId, stale);
         }
       }
 
       setQuerySource("airingTimes", airingTimeTargetKey, loadedFromNetwork ? "network" : "cache");
       return map;
     },
-    enabled: shouldLoadAiringTimes,
+    enabled: shouldLoadAiringTimes && cachedAiringTimeFetched,
     staleTime: 5 * 60 * 1000,
     refetchOnMount: shouldSuppressRefetch ? false : true,
   });
 
-  const airingTimeMap = airingTimeMapData ?? EMPTY_AIRING_TIME_MAP;
+  const airingTimeMap = useMemo(() => {
+    if (!cachedAiringTimeMap && !airingTimeMapData) return EMPTY_AIRING_TIME_MAP;
+    const merged = new Map<number, AiringTime>(cachedAiringTimeMap ?? undefined);
+    if (airingTimeMapData) {
+      for (const [subjectId, airingTime] of airingTimeMapData) {
+        merged.set(subjectId, airingTime);
+      }
+    }
+    return merged;
+  }, [cachedAiringTimeMap, airingTimeMapData]);
   const airingTimeSignature = airingIds
     .map((id) => {
       const airingTime = airingTimeMap.get(id);
@@ -957,6 +990,10 @@ export default function CollectionsPage() {
   const shouldWaitForCalendar = isWatching;
   const shouldWaitForAiringTimes = shouldLoadAiringTimes;
   const shouldWaitForEpisodes = shouldLoadEpisodes;
+  const shouldWaitForAiringTimeCache = shouldReadAiringTimeCache;
+  const isAiringTimeCacheReady = !shouldWaitForAiringTimeCache
+    || cachedAiringTimeMap !== undefined
+    || Boolean(cachedAiringTimeError);
   const collectionsSource = getQuerySourceStatus(
     querySources,
     "collections",
@@ -991,7 +1028,7 @@ export default function CollectionsPage() {
   );
   const cacheCalendar = calendarSource === "cache" ? calendar : undefined;
   const cacheAiringMap = useMemo(() => buildAiringMap(cacheCalendar), [cacheCalendar]);
-  const cacheAiringTimeMap = airingTimesSource === "cache" ? airingTimeMap : EMPTY_AIRING_TIME_MAP;
+  const cacheAiringTimeMap = cachedAiringTimeMap ?? EMPTY_AIRING_TIME_MAP;
   const cacheAiredEpMap = episodesSource === "cache" ? airedEpMap : EMPTY_EPISODE_MAP;
   const cacheSorted = useMemo(() => {
     if (isWatching && cacheCalendar) {
@@ -1009,19 +1046,19 @@ export default function CollectionsPage() {
   const isDisplayDataAvailable = Boolean(uname)
     && collData !== undefined
     && (!shouldWaitForCalendar || calendar !== undefined || Boolean(calError))
-    && (!shouldWaitForAiringTimes || airingTimeMapData !== undefined || Boolean(airingTimeError))
+    && isAiringTimeCacheReady
     && (!shouldWaitForEpisodes || episodeMap !== undefined || Boolean(episodeError));
   const isDisplayNetworkIdle = backgroundRefreshCount === 0
     && !isCollectionsFetching
     && (!shouldWaitForCalendar || !isCalendarFetching)
-    && (!shouldWaitForAiringTimes || !isAiringTimeFetching)
     && (!shouldWaitForEpisodes || !isEpisodeFetching);
   const isDisplayReady = Boolean(uname)
     && isDisplayDataAvailable
     && isDisplayNetworkIdle;
   const canCommitCacheSnapshot = Boolean(uname)
     && collData !== undefined
-    && collectionsSource === "cache";
+    && collectionsSource === "cache"
+    && isAiringTimeCacheReady;
   const committedSource: DataSource = hasNetworkSource([
     collectionsSource,
     shouldWaitForCalendar ? calendarSource : "skip",
@@ -1036,7 +1073,9 @@ export default function CollectionsPage() {
     "cache",
     collUpdatedAt || "pending",
     calendarSource === "cache" ? calendarUpdatedAt : "skip",
-    airingTimesSource === "cache" ? airingTimeUpdatedAt : "skip",
+    shouldWaitForAiringTimeCache
+      ? `airing-cache:${cachedAiringTimeMap !== undefined ? cachedAiringTimeUpdatedAt : (cachedAiringTimeError ? "error" : "pending")}`
+      : "skip",
     episodesSource === "cache" ? episodeUpdatedAt : "skip",
   ].join("|");
   const committedVersion = [
@@ -1047,6 +1086,9 @@ export default function CollectionsPage() {
     collUpdatedAt || "pending",
     shouldWaitForCalendar
       ? `${calendarSource}:${calendar !== undefined ? calendarUpdatedAt : (calError ? "error" : "pending")}`
+      : "skip",
+    shouldWaitForAiringTimeCache
+      ? `airing-cache:${cachedAiringTimeMap !== undefined ? cachedAiringTimeUpdatedAt : (cachedAiringTimeError ? "error" : "pending")}`
       : "skip",
     shouldWaitForAiringTimes
       ? `${airingTimesSource}:${airingTimeMapData !== undefined ? airingTimeUpdatedAt : (airingTimeError ? "error" : "pending")}`
