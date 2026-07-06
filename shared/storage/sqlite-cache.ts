@@ -34,6 +34,18 @@ type CacheEntryRow = {
   accessed_at?: number | null;
 };
 
+type CollectionTaskQueueRow = {
+  id: string;
+  kind: string;
+  payload_json: string;
+  status: PersistentCollectionTaskStatus;
+  attempt_count: number;
+  last_error: string | null;
+  run_after: number;
+  created_at: number;
+  updated_at: number;
+};
+
 export type CachedValueEntry<T> = {
   payload: T;
   updatedAt: number;
@@ -43,6 +55,20 @@ export type CachedValueEntry<T> = {
 export type CachedImageRecord = {
   remoteUrl: string;
   localPath: string;
+  updatedAt: number;
+};
+
+export type PersistentCollectionTaskStatus = "pending" | "running" | "failed" | "done";
+
+export type PersistentCollectionTask<T = unknown> = {
+  id: string;
+  kind: string;
+  payload: T;
+  status: PersistentCollectionTaskStatus;
+  attemptCount: number;
+  lastError: string | null;
+  runAfter: number;
+  createdAt: number;
   updatedAt: number;
 };
 
@@ -177,6 +203,25 @@ async function initializeSchema(db: Database) {
       updated_at INTEGER NOT NULL,
       accessed_at INTEGER NOT NULL
     )
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS collection_task_queue (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL,
+      last_error TEXT,
+      run_after INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_collection_task_queue_status_run_after
+    ON collection_task_queue (status, run_after, created_at)
   `);
 
   await ensureAccessedAtColumn(db, "subjects");
@@ -788,6 +833,154 @@ export async function deleteCachedValuesByPrefixExcept(cacheKeyPrefix: string, k
     await db.execute(
       "DELETE FROM cache_entries WHERE cache_key LIKE $1 AND cache_key != $2",
       [`${cacheKeyPrefix}%`, keepCacheKey],
+    );
+  }, undefined);
+}
+
+function collectionTaskFromRow<T>(row: CollectionTaskQueueRow): PersistentCollectionTask<T> | null {
+  try {
+    return {
+      id: row.id,
+      kind: row.kind,
+      payload: JSON.parse(row.payload_json) as T,
+      status: row.status,
+      attemptCount: row.attempt_count,
+      lastError: row.last_error,
+      runAfter: row.run_after,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function upsertPersistentCollectionTask(
+  task: Pick<PersistentCollectionTask, "id" | "kind" | "payload">,
+): Promise<PersistentCollectionTask | null> {
+  return withDatabase(async (db) => {
+    const now = Date.now();
+    await db.execute(
+      `INSERT INTO collection_task_queue
+         (id, kind, payload_json, status, attempt_count, last_error, run_after, created_at, updated_at)
+       VALUES ($1, $2, $3, 'pending', 0, NULL, $4, $4, $4)
+       ON CONFLICT(id) DO UPDATE SET
+         kind = excluded.kind,
+         payload_json = excluded.payload_json,
+         status = 'pending',
+         attempt_count = 0,
+         last_error = NULL,
+         run_after = excluded.run_after,
+         updated_at = excluded.updated_at`,
+      [task.id, task.kind, JSON.stringify(task.payload), now],
+    );
+
+    const rows = await db.select<CollectionTaskQueueRow[]>(
+      "SELECT * FROM collection_task_queue WHERE id = $1 LIMIT 1",
+      [task.id],
+    );
+    return rows[0] ? collectionTaskFromRow(rows[0]) : null;
+  }, null);
+}
+
+export async function readPersistentCollectionTasks(): Promise<PersistentCollectionTask[]> {
+  return withDatabase(async (db) => {
+    const rows = await db.select<CollectionTaskQueueRow[]>(
+      `SELECT * FROM collection_task_queue
+       WHERE status != 'done'
+       ORDER BY created_at ASC, updated_at ASC`,
+    );
+    return rows
+      .map((row) => collectionTaskFromRow(row))
+      .filter((task): task is PersistentCollectionTask => task !== null);
+  }, []);
+}
+
+export async function readDuePersistentCollectionTask(now = Date.now()): Promise<PersistentCollectionTask | null> {
+  return withDatabase(async (db) => {
+    const rows = await db.select<CollectionTaskQueueRow[]>(
+      `SELECT * FROM collection_task_queue
+       WHERE status IN ('pending', 'failed') AND run_after <= $1
+       ORDER BY created_at ASC, updated_at ASC
+       LIMIT 1`,
+      [now],
+    );
+    return rows[0] ? collectionTaskFromRow(rows[0]) : null;
+  }, null);
+}
+
+export async function readNextPersistentCollectionTaskRunAt(): Promise<number | null> {
+  return withDatabase(async (db) => {
+    const rows = await db.select<Array<{ run_after: number }>>(
+      `SELECT run_after FROM collection_task_queue
+       WHERE status IN ('pending', 'failed')
+       ORDER BY run_after ASC
+       LIMIT 1`,
+    );
+    return rows[0]?.run_after ?? null;
+  }, null);
+}
+
+export async function markPersistentCollectionTaskRunning(id: string) {
+  await withDatabase(async (db) => {
+    await db.execute(
+      "UPDATE collection_task_queue SET status = 'running', updated_at = $1 WHERE id = $2",
+      [Date.now(), id],
+    );
+  }, undefined);
+}
+
+export async function markPersistentCollectionTaskFailed(id: string, error: string, runAfter: number) {
+  await withDatabase(async (db) => {
+    await db.execute(
+      `UPDATE collection_task_queue SET
+         status = 'failed',
+         attempt_count = attempt_count + 1,
+         last_error = $1,
+         run_after = $2,
+         updated_at = $3
+       WHERE id = $4`,
+      [error, runAfter, Date.now(), id],
+    );
+  }, undefined);
+}
+
+export async function completePersistentCollectionTask(id: string) {
+  await withDatabase(async (db) => {
+    await db.execute("DELETE FROM collection_task_queue WHERE id = $1", [id]);
+  }, undefined);
+}
+
+export async function retryPersistentCollectionTask(id: string) {
+  await withDatabase(async (db) => {
+    await db.execute(
+      `UPDATE collection_task_queue SET
+         status = 'pending',
+         last_error = NULL,
+         run_after = $1,
+         updated_at = $1
+       WHERE id = $2`,
+      [Date.now(), id],
+    );
+  }, undefined);
+}
+
+export async function deletePersistentCollectionTask(id: string) {
+  await withDatabase(async (db) => {
+    await db.execute("DELETE FROM collection_task_queue WHERE id = $1", [id]);
+  }, undefined);
+}
+
+export async function recoverRunningPersistentCollectionTasks() {
+  await withDatabase(async (db) => {
+    const now = Date.now();
+    await db.execute(
+      `UPDATE collection_task_queue SET
+         status = 'pending',
+         run_after = $1,
+         updated_at = $1
+       WHERE status = 'running'`,
+      [now],
     );
   }, undefined);
 }

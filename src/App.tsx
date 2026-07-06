@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { setTokenProvider } from "@shared/api/client";
@@ -6,6 +7,7 @@ import { getAccessToken, fetchAndCacheUsername } from "./api/oauth";
 import { useAuth } from "./hooks/useAuth";
 import { isTauri } from "./api/tauri-fetch";
 import { DEFAULT_SHORTCUT, loadStoredShortcut } from "./api/shortcut";
+import { startCollectionTaskWorker } from "./api/collection-tasks";
 import { cleanupExpiredCache } from "@shared/storage/sqlite-cache";
 import Layout from "./components/Layout";
 import SearchPage from "./pages/SearchPage";
@@ -28,12 +30,19 @@ function RequireAuth() {
 
 export default function App() {
   const { authLoading, authenticated, handleLogin } = useAuth();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (authenticated) {
       fetchAndCacheUsername().catch(() => {});
     }
   }, [authenticated]);
+
+  useEffect(() => {
+    if (authenticated) {
+      startCollectionTaskWorker(queryClient);
+    }
+  }, [authenticated, queryClient]);
 
   useEffect(() => {
     if (!isTauri()) return;

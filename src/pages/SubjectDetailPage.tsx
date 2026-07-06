@@ -9,8 +9,6 @@ import {
   getSubjectCharacters,
   getEpisodes,
   getUserCollection,
-  patchSubjectEpisodes,
-  postUserCollection,
 } from "@shared/api/client";
 import { CollectionTypeLabel } from "@shared/api/types";
 import type { CollectionType, Episode, PagedResponse, SubjectRelation, UserCollection } from "@shared/api/types";
@@ -29,94 +27,27 @@ import {
   readCachedRelationsWithin,
   readCachedSubjectDeepWithin,
   readCachedSubjectDeep,
-  readCachedValue,
   writeCachedCharacters,
   writeCachedCollection,
   writeCachedEpisodes,
   writeCachedPersons,
   writeCachedRelations,
   writeCachedSubject,
-  writeCachedValue,
 } from "@shared/storage/sqlite-cache";
 import CachedImage from "../components/CachedImage";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
-import { addPendingMarkWatchedAction, runCollectionTask } from "../api/collection-tasks";
+import {
+  COLLECTION_TASK_QUEUE_EVENT,
+  enqueueCompleteProgressTask,
+  enqueueSetCollectionTypeTask,
+  getCollectionTaskQueue,
+  getOptimisticCollectionPatchForSubject,
+  type CollectionTask,
+} from "../api/collection-tasks";
 
 function isNotFoundError(error: unknown) {
   return error instanceof Error && error.message.includes("Bangumi API error 404");
-}
-
-function upsertCollection(
-  data: PagedResponse<UserCollection>,
-  collection: UserCollection,
-): PagedResponse<UserCollection> {
-  const idx = data.data.findIndex((item) => item.subject_id === collection.subject_id);
-  if (idx >= 0) {
-    const next = [...data.data];
-    next[idx] = collection;
-    return { ...data, data: next };
-  }
-
-  return {
-    ...data,
-    total: data.total + 1,
-    data: [collection, ...data.data],
-  };
-}
-
-function removeCollection(
-  data: PagedResponse<UserCollection>,
-  subjectId: number,
-): PagedResponse<UserCollection> {
-  const idx = data.data.findIndex((item) => item.subject_id === subjectId);
-  if (idx < 0) return data;
-
-  const next = [...data.data];
-  next.splice(idx, 1);
-  return {
-    ...data,
-    total: Math.max(0, data.total - 1),
-    data: next,
-  };
-}
-
-async function syncCollectionsCache(queryClient: QueryClient, subjectId: number, previousType?: number) {
-  const collection = queryClient.getQueryData<UserCollection>(["collection", subjectId]);
-  if (!collection) return null;
-
-  const uname = getUsername();
-  if (!uname) return collection;
-
-  queryClient.setQueryData<PagedResponse<UserCollection>>(
-    ["collections", String(collection.type), uname],
-    (old) => old ? upsertCollection(old, collection) : old,
-  );
-
-  if (previousType && previousType !== collection.type) {
-    queryClient.setQueryData<PagedResponse<UserCollection>>(
-      ["collections", String(previousType), uname],
-      (old) => old ? removeCollection(old, subjectId) : old,
-    );
-  }
-
-  // Persist the change to SQLite so it survives page refreshes.
-  const cacheKey = `collections-${collection.type}-${uname}`;
-  const cached = await readCachedValue<PagedResponse<UserCollection>>(cacheKey);
-  if (cached?.data) {
-    await writeCachedValue(cacheKey, upsertCollection(cached, collection));
-  }
-
-  // Remove from old type's SQLite list if type changed
-  if (previousType && previousType !== collection.type) {
-    const oldCacheKey = `collections-${previousType}-${uname}`;
-    const oldCached = await readCachedValue<PagedResponse<UserCollection>>(oldCacheKey);
-    if (oldCached?.data) {
-      await writeCachedValue(oldCacheKey, removeCollection(oldCached, subjectId));
-    }
-  }
-
-  return collection;
 }
 
 function getAirWeekdayLabel(airWeekday?: number, date?: string) {
@@ -247,7 +178,9 @@ type ConfirmDialog = {
   title: string;
   message: string;
   confirmLabel: string;
+  cancelLabel?: string;
   onConfirm: () => void;
+  onCancel?: () => void;
 };
 
 export default function SubjectDetailPage() {
@@ -266,6 +199,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
+  const [collectionTasks, setCollectionTasks] = useState<CollectionTask[]>([]);
   const [loadSecondaryDetailData, setLoadSecondaryDetailData] = useState(false);
   const [loadEpisodeData, setLoadEpisodeData] = useState(false);
   const initialEpStatus = useRef<number | null>(null);
@@ -506,6 +440,22 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const syncCollectionTasks = () => {
+      void getCollectionTaskQueue().then((tasks) => {
+        if (!cancelled) setCollectionTasks(tasks);
+      });
+    };
+
+    syncCollectionTasks();
+    window.addEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
+    };
+  }, []);
+
   async function fetchCollectionFromNetwork() {
     const uname = getUsername();
     if (!uname) return null;
@@ -559,25 +509,21 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
     },
   });
 
-  async function syncLocalCollection(patch: Partial<UserCollection>) {
-    const current = queryClient.getQueryData<UserCollection | null>(collectionQueryKey) ?? collection ?? null;
-    if (!current) return null;
-
-    const next = { ...current, ...patch };
-    queryClient.setQueryData(collectionQueryKey, next);
-
-    const uname = getUsername();
-    if (uname) {
-      await writeCachedCollection(uname, next);
-    }
-    return next;
-  }
-
   const sorted = episodeData?.data?.slice().sort((a, b) => a.sort - b.sort) ?? [];
   const mainEps = sorted.filter((e) => e.type === 0);
   const totalEp = mainEps.length > 0 ? mainEps.length : (subject?.total_episodes || subject?.eps || 0);
-  const currentEp = collection?.ep_status ?? 0;
-  const currentColType = collection?.type;
+  const subjectCollectionTasks = useMemo(
+    () => collectionTasks.filter((task) => task.payload.subjectId === subjectId),
+    [collectionTasks, subjectId],
+  );
+  const optimisticCollectionPatch = useMemo(
+    () => getOptimisticCollectionPatchForSubject(subjectId, collectionTasks),
+    [collectionTasks, subjectId],
+  );
+  const activeCollectionTask = subjectCollectionTasks.find((task) => task.status === "pending" || task.status === "running");
+  const failedCollectionTask = subjectCollectionTasks.find((task) => task.status === "failed");
+  const currentEp = optimisticCollectionPatch?.ep_status ?? collection?.ep_status ?? 0;
+  const currentColType = optimisticCollectionPatch?.type ?? collection?.type;
   const displayTarget = targetEp ?? currentEp;
   const isDirty = targetEp !== null && targetEp !== currentEp;
   const airWeekdayLabel = getAirWeekdayLabel(subject?.air_weekday, subject?.date);
@@ -596,30 +542,35 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
     }).catch(() => {});
   }
 
-  function ensureWatching(): Promise<boolean> {
+  function cancelConfirmDialog() {
+    const dialog = confirmDialog;
+    setConfirmDialog(null);
+    dialog?.onCancel?.();
+  }
+
+  function rememberQueuedTask(task: CollectionTask | null) {
+    if (!task) return;
+    setCollectionTasks((prev) => [
+      task,
+      ...prev.filter((item) => item.id !== task.id),
+    ]);
+  }
+
+  function getTaskSubjectTitle() {
+    return subject?.name_cn || subject?.name || `#${subjectId}`;
+  }
+
+  function confirmCanQueueProgress(): Promise<boolean> {
     return new Promise((resolve) => {
       if (!collection) {
         setConfirmDialog({
           title: "收藏并切换到「在看」？",
           message: "更新观看进度需要先将条目以「在看」状态收藏",
           confirmLabel: "收藏",
-          onConfirm: async () => {
+          onCancel: () => resolve(false),
+          onConfirm: () => {
             setConfirmDialog(null);
-            if (isMounted.current) setLoading(true);
-            try {
-              await runCollectionTask({ subjectId, nextType: 3 }, async () => {
-                await postUserCollection(subjectId, { type: 3 });
-                await fetchCollectionFromNetwork();
-                const synced = await syncCollectionsCache(queryClient, subjectId);
-                return { subjectId, nextType: synced?.type ?? 3 };
-              });
-              resolve(true);
-            } catch {
-              void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
-              resolve(false);
-            } finally {
-              if (isMounted.current) setLoading(false);
-            }
+            resolve(true);
           },
         });
         return;
@@ -630,23 +581,10 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
           title: "切换到「在看」？",
           message: `当前收藏状态为「${CollectionTypeLabel[currentType] || "其他"}」，需要切换到「在看」才能更新进度`,
           confirmLabel: "切换",
-          onConfirm: async () => {
+          onCancel: () => resolve(false),
+          onConfirm: () => {
             setConfirmDialog(null);
-            if (isMounted.current) setLoading(true);
-            try {
-              await runCollectionTask({ subjectId, previousType: currentType, nextType: 3 }, async () => {
-                await postUserCollection(subjectId, { type: 3 });
-                await fetchCollectionFromNetwork();
-                const synced = await syncCollectionsCache(queryClient, subjectId, currentType);
-                return { subjectId, previousType: currentType, nextType: synced?.type ?? 3 };
-              });
-              resolve(true);
-            } catch {
-              void showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
-              resolve(false);
-            } finally {
-              if (isMounted.current) setLoading(false);
-            }
+            resolve(true);
           },
         });
         return;
@@ -655,99 +593,83 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
     });
   }
 
+  function confirmMarkWatchedAfterSave(progressTarget: number): Promise<boolean> {
+    if (progressTarget < totalEp || totalEp <= 0) return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+      setConfirmDialog({
+        title: "保存后标记为「看过」？",
+        message: `观看进度将保存为 ${progressTarget} / ${totalEp} 集，是否在保存成功后标记为「看过」？`,
+        cancelLabel: "仅保存进度",
+        confirmLabel: "保存并标记",
+        onCancel: () => resolve(false),
+        onConfirm: () => {
+          setConfirmDialog(null);
+          resolve(true);
+        },
+      });
+    });
+  }
+
   async function commitProgress() {
     if (!isDirty || targetEp === null) return;
 
-    const ok = await ensureWatching();
+    const ok = await confirmCanQueueProgress();
     if (!ok) return;
 
     const progressTarget = targetEp;
-    const prevType = collection?.type;
+    const markWatched = await confirmMarkWatchedAfterSave(progressTarget);
+    const username = getUsername();
+    if (!username) {
+      await showSaveFailedToast("无法获取用户信息，请重新登录后重试");
+      return;
+    }
+
     if (isMounted.current) setLoading(true);
-    let saved = false;
     try {
-      await runCollectionTask({ subjectId, previousType: prevType, nextType: 3 }, async () => {
-        const episodePayload = episodeData ?? (await ensureEpisodesLoaded());
-        const from = Math.min(currentEp, progressTarget);
-        const to = Math.max(currentEp, progressTarget);
-        const episodeSource = episodePayload?.data?.slice().sort((a, b) => a.sort - b.sort) ?? [];
-        const ids = episodeSource.filter((e) => e.type === 0).slice(from, to).map((e) => e.id);
-        if (ids.length === 0 && from !== to) {
-          throw new Error("Episode list is not ready");
-        }
-        if (ids.length > 0) {
-          await patchSubjectEpisodes(subjectId, { episode_id: ids, type: progressTarget > currentEp ? 2 : 0 });
-        }
-        await fetchCollectionFromNetwork();
-        await syncLocalCollection({ ep_status: progressTarget, type: 3 });
-        const synced = await syncCollectionsCache(queryClient, subjectId, prevType);
-        return { subjectId, previousType: prevType, nextType: synced?.type ?? 3 };
+      const queued = await enqueueCompleteProgressTask({
+        username,
+        subjectId,
+        subjectTitle: getTaskSubjectTitle(),
+        targetEp: progressTarget,
+        totalEp,
+        ensureWatching: !collection || collection.type !== 3,
+        markWatched,
+        previousType: collection?.type,
       });
+      rememberQueuedTask(queued);
       if (isMounted.current) {
         setTargetEp(null);
         collectionChangedRef.current = true;
       }
-      saved = true;
     } catch {
-      await showSaveFailedToast("进度保存失败，请检查网络后重试");
+      await showSaveFailedToast("后台任务创建失败，请稍后重试");
     } finally {
       if (isMounted.current) setLoading(false);
-    }
-
-    if (!saved) return;
-
-    // After progress update, check if fully watched
-    if (progressTarget >= totalEp && totalEp > 0) {
-      if (!isMounted.current) {
-        addPendingMarkWatchedAction({
-          subjectId,
-          subjectTitle: subject?.name_cn || subject?.name || `#${subjectId}`,
-          totalEp,
-          previousType: 3,
-          nextType: 2,
-        });
-        return;
-      }
-
-      setConfirmDialog({
-        title: "标记为「看过」？",
-        message: `观看进度已达 ${totalEp} 集（总集数），是否标记为「看过」？`,
-        confirmLabel: "标记",
-        onConfirm: async () => {
-          setConfirmDialog(null);
-          if (isMounted.current) setLoading(true);
-          try {
-            await runCollectionTask({ subjectId, previousType: 3, nextType: 2 }, async () => {
-              await postUserCollection(subjectId, { type: 2 });
-              await fetchCollectionFromNetwork();
-              const synced = await syncCollectionsCache(queryClient, subjectId, 3);
-              return { subjectId, previousType: 3, nextType: synced?.type ?? 2 };
-            });
-            if (isMounted.current) collectionChangedRef.current = true;
-          } catch {
-            await showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
-          } finally {
-            if (isMounted.current) setLoading(false);
-          }
-        },
-      });
     }
   }
 
   async function setCollectionType(type: CollectionType) {
-    setLoading(true);
     setPaletteOpen(false);
+    const username = getUsername();
+    if (!username) {
+      await showSaveFailedToast("无法获取用户信息，请重新登录后重试");
+      return;
+    }
+
+    setLoading(true);
     try {
-      const prevType = collection?.type;
-      await runCollectionTask({ subjectId, previousType: prevType, nextType: type }, async () => {
-        await postUserCollection(subjectId, { type });
-        await fetchCollectionFromNetwork();
-        const synced = await syncCollectionsCache(queryClient, subjectId, prevType);
-        return { subjectId, previousType: prevType, nextType: synced?.type ?? type };
+      const queued = await enqueueSetCollectionTypeTask({
+        username,
+        subjectId,
+        subjectTitle: getTaskSubjectTitle(),
+        previousType: collection?.type,
+        nextType: type,
       });
+      rememberQueuedTask(queued);
       if (isMounted.current) collectionChangedRef.current = true;
     } catch {
-      await showSaveFailedToast("收藏状态保存失败，请检查网络后重试");
+      await showSaveFailedToast("后台任务创建失败，请稍后重试");
     } finally {
       if (isMounted.current) setLoading(false);
     }
@@ -793,7 +715,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       key: "Escape",
       when: () => Boolean(confirmDialog),
       handler: () => {
-        setConfirmDialog(null);
+        cancelConfirmDialog();
       },
     },
     {
@@ -932,7 +854,10 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
         <span className="text-[13px] font-medium truncate">
           {subject?.name_cn || subject?.name || "条目详情"}
         </span>
-        {loading && <span className="text-[12px] text-fg-tertiary animate-pulse ml-auto">保存中…</span>}
+        {(loading || activeCollectionTask) && <span className="text-[12px] text-fg-tertiary animate-pulse ml-auto">同步中…</span>}
+        {!loading && !activeCollectionTask && failedCollectionTask && (
+          <span className="text-[12px] text-danger ml-auto">同步失败</span>
+        )}
       </header>
 
       {/* Two-column body */}
@@ -1159,11 +1084,13 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 
             <div>
               <span className="text-fg-tertiary">状态 </span>
-              {collection ? (
-                <span className="text-accent font-medium">{CollectionTypeLabel[collection.type]}</span>
+              {currentColType ? (
+                <span className="text-accent font-medium">{CollectionTypeLabel[currentColType]}</span>
               ) : (
                 <span className="text-fg-tertiary">未收藏</span>
               )}
+              {activeCollectionTask && <span className="text-fg-tertiary ml-1">同步中</span>}
+              {failedCollectionTask && <span className="text-danger ml-1">同步失败</span>}
             </div>
 
             {totalEp > 0 && (
@@ -1183,7 +1110,11 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
                   />
                 </div>
                 {isDirty && <p className="text-[12px] text-fg-tertiary mt-1.5">按 Enter 提交 · ← → 调整</p>}
-                {!isDirty && totalEp > 0 && <p className="text-[12px] text-fg-tertiary mt-1.5">← → 调整进度</p>}
+                {!isDirty && activeCollectionTask && <p className="text-[12px] text-fg-tertiary mt-1.5">后台同步中，可返回或隐藏窗口</p>}
+                {!isDirty && failedCollectionTask && <p className="text-[12px] text-danger mt-1.5">后台同步失败，将自动重试</p>}
+                {!isDirty && !activeCollectionTask && !failedCollectionTask && totalEp > 0 && (
+                  <p className="text-[12px] text-fg-tertiary mt-1.5">← → 调整进度</p>
+                )}
               </div>
             )}
           </div>
@@ -1246,10 +1177,10 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
                   }`}
                 >
                   <kbd className={`text-[11px] w-4 text-center ${i === paletteIndex ? "text-accent-fg/70" : "text-fg-tertiary"}`}>{opt.key}</kbd>
-                  {collection?.type === opt.type && (
+                  {currentColType === opt.type && (
                     <span className={`text-[11px] ${i === paletteIndex ? "text-accent-fg" : "text-accent"}`}>●</span>
                   )}
-                  {collection?.type !== opt.type && <span className="w-3.5" />}
+                  {currentColType !== opt.type && <span className="w-3.5" />}
                   <span>{opt.label}</span>
                 </button>
               ))}
@@ -1264,7 +1195,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       {/* Confirm Dialog */}
       {confirmDialog && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[30vh]">
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setConfirmDialog(null)} />
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={cancelConfirmDialog} />
           <div className="relative w-72 bg-elevated rounded-xl border border-line-strong shadow-pop overflow-hidden">
             <div className="px-4 pt-3 pb-1">
               <span className="text-[13px] font-semibold text-fg">{confirmDialog.title}</span>
@@ -1274,10 +1205,10 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
             </div>
             <div className="flex gap-2 px-4 pb-3">
               <button
-                onClick={() => setConfirmDialog(null)}
+                onClick={cancelConfirmDialog}
                 className="flex-1 px-3 py-1.5 text-[13px] rounded-md text-fg-secondary hover:bg-hover transition-colors"
               >
-                取消
+                {confirmDialog.cancelLabel ?? "取消"}
               </button>
               <button
                 onClick={confirmDialog.onConfirm}

@@ -6,9 +6,7 @@ import {
   getAllUserCollections,
   getCalendar,
   getEpisodes,
-  getUserCollection,
   getUserCollections,
-  postUserCollection,
 } from "@shared/api/client";
 import type { CalendarItem, PagedResponse, UserCollection } from "@shared/api/types";
 import { getAiringAt } from "@shared/api/anilist";
@@ -30,7 +28,6 @@ import {
   readCachedValuesWithin,
   readCachedValueWithLegacy,
   readLegacyHttpCache,
-  writeCachedCollection,
   writeCachedSubjectPreviews,
   writeCachedValue,
 } from "@shared/storage/sqlite-cache";
@@ -39,12 +36,13 @@ import { refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import {
   COLLECTION_TASK_EVENT,
-  PENDING_COLLECTION_ACTIONS_EVENT,
-  getPendingCollectionActions,
-  removePendingCollectionAction,
-  runCollectionTask,
+  COLLECTION_TASK_QUEUE_EVENT,
+  getCollectionTaskQueue,
+  getCollectionTaskSummary,
+  ignoreCollectionTask,
+  retryCollectionTask,
   type CollectionTaskEventDetail,
-  type PendingCollectionAction,
+  type CollectionTask,
 } from "../api/collection-tasks";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
@@ -336,40 +334,6 @@ async function fetchAndCacheCalendar() {
   return data;
 }
 
-function upsertCollection(
-  data: PagedResponse<UserCollection>,
-  collection: UserCollection,
-): PagedResponse<UserCollection> {
-  const idx = data.data.findIndex((item) => item.subject_id === collection.subject_id);
-  if (idx >= 0) {
-    const next = [...data.data];
-    next[idx] = collection;
-    return { ...data, data: next };
-  }
-
-  return {
-    ...data,
-    total: data.total + 1,
-    data: [collection, ...data.data],
-  };
-}
-
-function removeCollection(
-  data: PagedResponse<UserCollection>,
-  subjectId: number,
-): PagedResponse<UserCollection> {
-  const idx = data.data.findIndex((item) => item.subject_id === subjectId);
-  if (idx < 0) return data;
-
-  const next = [...data.data];
-  next.splice(idx, 1);
-  return {
-    ...data,
-    total: Math.max(0, data.total - 1),
-    data: next,
-  };
-}
-
 export default function CollectionsPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -404,7 +368,7 @@ export default function CollectionsPage() {
   const [querySources, setQuerySources] = useState<QuerySourceState>({});
   const [backgroundRefreshCount, setBackgroundRefreshCount] = useState(0);
   const [shouldSuppressRefetch, setShouldSuppressRefetch] = useState(initialState.isReturningFromDetail);
-  const [pendingActions, setPendingActions] = useState<PendingCollectionAction[]>(() => getPendingCollectionActions());
+  const [collectionTasks, setCollectionTasks] = useState<CollectionTask[]>([]);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const isWatching = collectionType === "3";
   const today = useMemo(() => getBangumiWeekdayFromDateKey(todayDateKey), [todayDateKey]);
@@ -477,67 +441,20 @@ export default function CollectionsPage() {
   }, [collectionType, collectionsQueryKey, queryClient]);
 
   useEffect(() => {
-    const syncPendingActions = () => setPendingActions(getPendingCollectionActions());
+    let cancelled = false;
+    const syncCollectionTasks = () => {
+      void getCollectionTaskQueue().then((tasks) => {
+        if (!cancelled) setCollectionTasks(tasks);
+      });
+    };
 
-    window.addEventListener(PENDING_COLLECTION_ACTIONS_EVENT, syncPendingActions);
+    syncCollectionTasks();
+    window.addEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
     return () => {
-      window.removeEventListener(PENDING_COLLECTION_ACTIONS_EVENT, syncPendingActions);
+      cancelled = true;
+      window.removeEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
     };
   }, []);
-
-  async function executePendingAction(action: PendingCollectionAction) {
-    if (!uname) return;
-
-    try {
-      await runCollectionTask({
-        subjectId: action.subjectId,
-        previousType: action.previousType,
-        nextType: action.nextType,
-      }, async () => {
-        await postUserCollection(action.subjectId, { type: action.nextType });
-        const updated = await getUserCollection(uname, action.subjectId);
-
-        await writeCachedCollection(uname, updated);
-        queryClient.setQueryData(["collection", action.subjectId], updated);
-
-        queryClient.setQueryData<PagedResponse<UserCollection>>(
-          ["collections", String(updated.type), uname],
-          (old) => old ? upsertCollection(old, updated) : old,
-        );
-        queryClient.setQueryData<PagedResponse<UserCollection>>(
-          ["collections", String(action.previousType), uname],
-          (old) => old ? removeCollection(old, action.subjectId) : old,
-        );
-
-        const nextCacheKey = `${COLLECTIONS_CACHE_PREFIX}${updated.type}-${uname}`;
-        const nextCached = await readCachedValue<PagedResponse<UserCollection>>(nextCacheKey);
-        if (nextCached?.data) {
-          await writeCachedValue(nextCacheKey, upsertCollection(nextCached, updated));
-        }
-
-        const previousCacheKey = `${COLLECTIONS_CACHE_PREFIX}${action.previousType}-${uname}`;
-        const previousCached = await readCachedValue<PagedResponse<UserCollection>>(previousCacheKey);
-        if (previousCached?.data) {
-          await writeCachedValue(previousCacheKey, removeCollection(previousCached, action.subjectId));
-        }
-
-        return {
-          subjectId: action.subjectId,
-          previousType: action.previousType,
-          nextType: updated.type,
-        };
-      });
-
-      removePendingCollectionAction(action.id);
-    } catch {
-      await invoke("show_toast", {
-        message: "收藏状态保存失败，请检查网络后重试",
-        variant: "error",
-        width: 360,
-        durationMs: 2200,
-      }).catch(() => {});
-    }
-  }
 
   // Detect return from subject detail page and update only the changed item
   useEffect(() => {
@@ -1302,7 +1219,12 @@ export default function CollectionsPage() {
     },
   ], { priority: 10 });
 
-  const pendingAction = pendingActions[0];
+  const collectionTask = collectionTasks[0];
+  const collectionTaskStatus = collectionTask?.status === "failed"
+    ? "同步失败"
+    : collectionTask?.status === "running"
+    ? "同步中"
+    : "等待同步";
 
   return (
     <div className="h-full flex flex-col">
@@ -1315,34 +1237,45 @@ export default function CollectionsPage() {
         </span>
       </div>
 
-      {pendingAction && (
+      {collectionTask && (
         <div className="shrink-0 border-b border-line bg-bg-secondary px-4 py-2 flex items-center gap-3">
           <div className="min-w-0 flex-1">
             <p className="text-[13px] text-fg truncate">
-              {pendingAction.subjectTitle} 已看到完结
+              {getCollectionTaskSummary(collectionTask)} · {collectionTaskStatus}
             </p>
-            {pendingActions.length > 1 && (
+            {collectionTask.status === "failed" && collectionTask.lastError && (
+              <p className="text-[12px] text-danger truncate">
+                {collectionTask.lastError}
+              </p>
+            )}
+            {collectionTasks.length > 1 && (
               <p className="text-[12px] text-fg-tertiary">
-                另有 {pendingActions.length - 1} 个待处理条目
+                另有 {collectionTasks.length - 1} 个后台任务
               </p>
             )}
           </div>
-          <button
-            type="button"
-            className="shrink-0 h-7 px-3 rounded border border-line bg-bg hover:bg-hover text-[12px] text-fg"
-            onClick={() => {
-              void executePendingAction(pendingAction);
-            }}
-          >
-            标记看过
-          </button>
-          <button
-            type="button"
-            className="shrink-0 h-7 px-2 rounded border border-line bg-bg hover:bg-hover text-[12px] text-fg-tertiary"
-            onClick={() => removePendingCollectionAction(pendingAction.id)}
-          >
-            忽略
-          </button>
+          {collectionTask.status === "failed" && (
+            <button
+              type="button"
+              className="shrink-0 h-7 px-3 rounded border border-line bg-bg hover:bg-hover text-[12px] text-fg"
+              onClick={() => {
+                void retryCollectionTask(collectionTask.id);
+              }}
+            >
+              重试
+            </button>
+          )}
+          {collectionTask.status !== "running" && (
+            <button
+              type="button"
+              className="shrink-0 h-7 px-2 rounded border border-line bg-bg hover:bg-hover text-[12px] text-fg-tertiary"
+              onClick={() => {
+                void ignoreCollectionTask(collectionTask.id);
+              }}
+            >
+              忽略
+            </button>
+          )}
         </div>
       )}
 
