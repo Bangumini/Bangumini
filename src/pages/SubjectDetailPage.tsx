@@ -35,6 +35,7 @@ import {
   writeCachedSubject,
 } from "@shared/storage/sqlite-cache";
 import CachedImage from "../components/CachedImage";
+import SyncQueueDock from "../components/SyncQueueDock";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import {
@@ -195,7 +196,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
   const location = useLocation();
   const queryClient = useQueryClient();
   const [targetEp, setTargetEp] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
@@ -625,7 +625,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       return;
     }
 
-    if (isMounted.current) setLoading(true);
     try {
       const queued = await enqueueCompleteProgressTask({
         username,
@@ -644,8 +643,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       }
     } catch {
       await showSaveFailedToast("后台任务创建失败，请稍后重试");
-    } finally {
-      if (isMounted.current) setLoading(false);
     }
   }
 
@@ -657,7 +654,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       return;
     }
 
-    setLoading(true);
     try {
       const queued = await enqueueSetCollectionTypeTask({
         username,
@@ -670,8 +666,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
       if (isMounted.current) collectionChangedRef.current = true;
     } catch {
       await showSaveFailedToast("后台任务创建失败，请稍后重试");
-    } finally {
-      if (isMounted.current) setLoading(false);
     }
   }
 
@@ -854,10 +848,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
         <span className="text-[13px] font-medium truncate">
           {subject?.name_cn || subject?.name || "条目详情"}
         </span>
-        {(loading || activeCollectionTask) && <span className="text-[12px] text-fg-tertiary animate-pulse ml-auto">同步中…</span>}
-        {!loading && !activeCollectionTask && failedCollectionTask && (
-          <span className="text-[12px] text-danger ml-auto">同步失败</span>
-        )}
       </header>
 
       {/* Two-column body */}
@@ -1220,6 +1210,8 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
           </div>
         </div>
       )}
+
+      <SyncQueueDock />
     </div>
   );
 }

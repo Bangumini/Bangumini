@@ -36,13 +36,7 @@ import { refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import {
   COLLECTION_TASK_EVENT,
-  COLLECTION_TASK_QUEUE_EVENT,
-  getCollectionTaskQueue,
-  getCollectionTaskSummary,
-  ignoreCollectionTask,
-  retryCollectionTask,
   type CollectionTaskEventDetail,
-  type CollectionTask,
 } from "../api/collection-tasks";
 import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
@@ -368,7 +362,6 @@ export default function CollectionsPage() {
   const [querySources, setQuerySources] = useState<QuerySourceState>({});
   const [backgroundRefreshCount, setBackgroundRefreshCount] = useState(0);
   const [shouldSuppressRefetch, setShouldSuppressRefetch] = useState(initialState.isReturningFromDetail);
-  const [collectionTasks, setCollectionTasks] = useState<CollectionTask[]>([]);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const isWatching = collectionType === "3";
   const today = useMemo(() => getBangumiWeekdayFromDateKey(todayDateKey), [todayDateKey]);
@@ -439,22 +432,6 @@ export default function CollectionsPage() {
       window.removeEventListener(COLLECTION_TASK_EVENT, handleCollectionTask);
     };
   }, [collectionType, collectionsQueryKey, queryClient]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const syncCollectionTasks = () => {
-      void getCollectionTaskQueue().then((tasks) => {
-        if (!cancelled) setCollectionTasks(tasks);
-      });
-    };
-
-    syncCollectionTasks();
-    window.addEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
-    };
-  }, []);
 
   // Detect return from subject detail page and update only the changed item
   useEffect(() => {
@@ -1219,13 +1196,6 @@ export default function CollectionsPage() {
     },
   ], { priority: 10 });
 
-  const collectionTask = collectionTasks[0];
-  const collectionTaskStatus = collectionTask?.status === "failed"
-    ? "同步失败"
-    : collectionTask?.status === "running"
-    ? "同步中"
-    : "等待同步";
-
   return (
     <div className="h-full flex flex-col">
       {/* Page indicator */}
@@ -1236,48 +1206,6 @@ export default function CollectionsPage() {
             : `第 ${page} / ${totalPages} 页 · 共 ${visibleSorted.length} 条`}
         </span>
       </div>
-
-      {collectionTask && (
-        <div className="shrink-0 border-b border-line bg-bg-secondary px-4 py-2 flex items-center gap-3">
-          <div className="min-w-0 flex-1">
-            <p className="text-[13px] text-fg truncate">
-              {getCollectionTaskSummary(collectionTask)} · {collectionTaskStatus}
-            </p>
-            {collectionTask.status === "failed" && collectionTask.lastError && (
-              <p className="text-[12px] text-danger truncate">
-                {collectionTask.lastError}
-              </p>
-            )}
-            {collectionTasks.length > 1 && (
-              <p className="text-[12px] text-fg-tertiary">
-                另有 {collectionTasks.length - 1} 个后台任务
-              </p>
-            )}
-          </div>
-          {collectionTask.status === "failed" && (
-            <button
-              type="button"
-              className="shrink-0 h-7 px-3 rounded border border-line bg-bg hover:bg-hover text-[12px] text-fg"
-              onClick={() => {
-                void retryCollectionTask(collectionTask.id);
-              }}
-            >
-              重试
-            </button>
-          )}
-          {collectionTask.status !== "running" && (
-            <button
-              type="button"
-              className="shrink-0 h-7 px-2 rounded border border-line bg-bg hover:bg-hover text-[12px] text-fg-tertiary"
-              onClick={() => {
-                void ignoreCollectionTask(collectionTask.id);
-              }}
-            >
-              忽略
-            </button>
-          )}
-        </div>
-      )}
 
       {/* Scrollable list */}
       <div className="flex-1 overflow-y-auto p-2.5">
