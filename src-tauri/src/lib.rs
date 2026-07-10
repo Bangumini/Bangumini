@@ -123,12 +123,62 @@ fn show_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
     guard.store(true, Ordering::SeqCst);
     let _ = w.show();
     let _ = w.set_focus();
+    let window = w.clone();
     let g = guard.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        let started = std::time::Instant::now();
+        for delay in [50, 100, 150] {
+            std::thread::sleep(std::time::Duration::from_millis(delay));
+            if !window.is_visible().unwrap_or(false) || window.is_focused().unwrap_or(false) {
+                break;
+            }
+            let _ = window.set_focus();
+        }
+        let guard_duration = std::time::Duration::from_millis(400);
+        if let Some(remaining) = guard_duration.checked_sub(started.elapsed()) {
+            std::thread::sleep(remaining);
+        }
         g.store(false, Ordering::SeqCst);
     });
 }
+
+fn toggle_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
+    let visible = w.is_visible().unwrap_or(false);
+    let focused = w.is_focused().unwrap_or(false);
+
+    if visible && focused {
+        let _ = w.hide();
+    } else {
+        show_window(w, guard);
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_shortcut_modifiers_release(shortcut: &Shortcut) {
+    use tauri_plugin_global_shortcut::Modifiers;
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+    fn key_down(vk: i32) -> bool {
+        unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
+    }
+
+    let modifiers = shortcut.mods;
+
+    loop {
+        let pressed = (modifiers.contains(Modifiers::SHIFT) && key_down(0x10))
+            || (modifiers.contains(Modifiers::CONTROL) && key_down(0x11))
+            || (modifiers.contains(Modifiers::ALT) && key_down(0x12))
+            || (modifiers.contains(Modifiers::SUPER) && (key_down(0x5B) || key_down(0x5C)));
+
+        if !pressed {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[cfg(not(windows))]
+fn wait_for_shortcut_modifiers_release(_shortcut: &Shortcut) {}
 
 fn install_shortcut(app: &tauri::AppHandle, accelerator: &str) -> Result<(), String> {
     let new_shortcut = Shortcut::from_str(accelerator)
@@ -148,15 +198,18 @@ fn install_shortcut(app: &tauri::AppHandle, accelerator: &str) -> Result<(), Str
     let w = window.clone();
     let g = (*guard_state).clone();
     app.global_shortcut()
-        .on_shortcut(new_shortcut.clone(), move |_app, _s, event| {
-            if event.state() != GsShortcutState::Pressed {
+        .on_shortcut(new_shortcut.clone(), move |_app, shortcut, event| {
+            if event.state() != GsShortcutState::Released {
                 return;
             }
-            if let Ok(true) = w.is_visible() {
-                let _ = w.hide();
-            } else {
-                show_window(&w, &g);
-            }
+
+            let shortcut = *shortcut;
+            let window = w.clone();
+            let guard = g.clone();
+            std::thread::spawn(move || {
+                wait_for_shortcut_modifiers_release(&shortcut);
+                toggle_window(&window, &guard);
+            });
         })
         .map_err(|e| e.to_string())?;
 
@@ -567,11 +620,7 @@ pub fn run() {
                 .on_menu_event(move |app, event| {
                     match event.id().as_ref() {
                         "toggle" => {
-                            if w_tray.is_visible().unwrap_or(false) {
-                                let _ = w_tray.hide();
-                            } else {
-                                show_window(&w_tray, &g_menu);
-                            }
+                            toggle_window(&w_tray, &g_menu);
                         }
                         "quit" => {
                             app.exit(0);
@@ -587,11 +636,7 @@ pub fn run() {
                     } = event
                     {
                         let w = tray.app_handle().get_webview_window("main").unwrap();
-                        if w.is_visible().unwrap_or(false) {
-                            let _ = w.hide();
-                        } else {
-                            show_window(&w, &g_click);
-                        }
+                        toggle_window(&w, &g_click);
                     }
                 })
                 .build(app)?;
