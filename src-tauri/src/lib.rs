@@ -26,7 +26,10 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, SetWindowLongPtrW, GWLP_WNDPROC, WM_SYSCOMMAND, SC_KEYMENU,
+    CallWindowProcW, SetWindowLongPtrW, SetWindowPos,
+    GWLP_WNDPROC, HWND_TOPMOST, HWND_NOTOPMOST,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    WM_SYSCOMMAND, SC_KEYMENU,
 };
 
 #[cfg(windows)]
@@ -39,20 +42,22 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // Block Alt+Space system menu
-    if msg == WM_SYSCOMMAND && wparam.0 == SC_KEYMENU as usize {
-        return LRESULT(0);
-    }
+    unsafe {
+        // Block Alt+Space system menu
+        if msg == WM_SYSCOMMAND && wparam.0 == SC_KEYMENU as usize {
+            return LRESULT(0);
+        }
 
-    // Call the original window procedure for all other messages
-    let old_proc = OLD_WNDPROC.load(std::sync::atomic::Ordering::SeqCst);
-    CallWindowProcW(
-        std::mem::transmute(old_proc),
-        hwnd,
-        msg,
-        wparam,
-        lparam,
-    )
+        // Call the original window procedure for all other messages
+        let old_proc = OLD_WNDPROC.load(std::sync::atomic::Ordering::SeqCst);
+        CallWindowProcW(
+            std::mem::transmute(old_proc),
+            hwnd,
+            msg,
+            wparam,
+            lparam,
+        )
+    }
 }
 
 const CLIENT_ID: &str = "bgm61886a103fe0672c1";
@@ -119,9 +124,41 @@ fn build_client_with_proxy(holder: &ProxyHolder) -> reqwest::Client {
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// 将窗口带到前台：临时设为置顶（topmost）以绕过 Windows 前台锁定，
+/// 让开机自启的后台进程也能把窗口展示在用户眼前。
+#[cfg(windows)]
+fn bring_window_to_foreground(w: &tauri::WebviewWindow) {
+    if let Ok(handle) = w.window_handle() {
+        if let RawWindowHandle::Win32(win32_handle) = handle.as_ref() {
+            unsafe {
+                let hwnd = HWND(win32_handle.hwnd.get() as *mut std::ffi::c_void);
+                // 临时置顶，强制提升到 z-order 最上层，绕过前台锁定
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+                // 短暂延迟后取消置顶，恢复正常的窗口行为
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_NOTOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn bring_window_to_foreground(_w: &tauri::WebviewWindow) {}
+
 fn show_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
     guard.store(true, Ordering::SeqCst);
     let _ = w.show();
+    bring_window_to_foreground(w);
     let _ = w.set_focus();
     let window = w.clone();
     let g = guard.clone();
@@ -143,10 +180,7 @@ fn show_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
 }
 
 fn toggle_window(w: &tauri::WebviewWindow, guard: &Arc<AtomicBool>) {
-    let visible = w.is_visible().unwrap_or(false);
-    let focused = w.is_focused().unwrap_or(false);
-
-    if visible && focused {
+    if w.is_visible().unwrap_or(false) {
         let _ = w.hide();
     } else {
         show_window(w, guard);
