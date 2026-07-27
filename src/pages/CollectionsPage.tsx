@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { Fragment, useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -19,7 +19,9 @@ import {
 	sortCollections,
 	getDisplayLabel,
 	WEEKDAY_CN,
+	GROUP_LABEL,
 } from "@shared/sort-collections";
+import type { SortedCollection } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
 	deleteCachedValue,
@@ -55,6 +57,7 @@ const QUERY_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
 const AIRING_TIME_CACHE_MAX_AGE = 1000 * 60 * 60 * 24 * 90;
 const EPISODES_CACHE_MAX_AGE = 1000 * 60 * 30;
 const EMPTY_COLLECTIONS: UserCollection[] = [];
+const EMPTY_SORTED: SortedCollection[] = [];
 const EMPTY_EPISODE_MAP = new Map<number, number>();
 const EMPTY_DISPLAY_LABEL_MAP = new Map<number, string | null>();
 const CALENDAR_QUERY_KEY = ["calendar"] as const;
@@ -84,7 +87,7 @@ type CommittedCollectionsState = {
 	scopeKey: string;
 	version: string;
 	source: DataSource;
-	sorted: UserCollection[];
+	sorted: SortedCollection[];
 	displayLabelMap: Map<number, string | null>;
 };
 
@@ -762,6 +765,8 @@ export default function CollectionsPage() {
 		[rawCollections, airingMap],
 	);
 
+	// 非日历但在补的条目——拉取 AniList 数据以确认是否在播
+	// AniList nextAiringEpisode 是 isAiring 的二级判定信号
 	const staleAiringIds = useMemo(
 		() =>
 			isWatching
@@ -1063,19 +1068,29 @@ export default function CollectionsPage() {
 				airingTimeMap,
 			);
 		}
-		return rawCollections;
+		return rawCollections.map((collection) => ({
+			collection,
+			group: "completed" as const,
+			weekday: 0,
+			airedEp: 0,
+		}));
 	}, [rawCollections, calendar, isWatching, today, airedEpMap, airingTimeMap]);
 
 	const displayLabelMap = useMemo(() => {
 		const map = new Map<number, string | null>();
 		for (const item of sorted) {
 			map.set(
-				item.subject_id,
-				getDisplayLabel(item, airingMap, airedEpMap, today, airingTimeMap),
+				item.collection.subject_id,
+				getDisplayLabel(
+					item.collection,
+					{ group: item.group, weekday: item.weekday, airedEp: item.airedEp },
+					today,
+					airingTimeMap,
+				),
 			);
 		}
 		return map;
-	}, [sorted, airingMap, airedEpMap, today, airingTimeMap]);
+	}, [sorted, today, airingTimeMap]);
 
 	const committedScopeKey = `${uname ?? ""}:${collectionType}`;
 	const shouldWaitForCalendar = isWatching;
@@ -1119,10 +1134,6 @@ export default function CollectionsPage() {
 		Boolean(episodeError),
 	);
 	const cacheCalendar = calendarSource === "cache" ? calendar : undefined;
-	const cacheAiringMap = useMemo(
-		() => buildAiringMap(cacheCalendar),
-		[cacheCalendar],
-	);
 	const cacheAiringTimeMap = cachedAiringTimeMap ?? EMPTY_AIRING_TIME_MAP;
 	const cacheAiredEpMap =
 		episodesSource === "cache" ? airedEpMap : EMPTY_EPISODE_MAP;
@@ -1136,7 +1147,12 @@ export default function CollectionsPage() {
 				cacheAiringTimeMap,
 			);
 		}
-		return rawCollections;
+		return rawCollections.map((collection) => ({
+			collection,
+			group: "completed" as const,
+			weekday: 0,
+			airedEp: 0,
+		}));
 	}, [
 		rawCollections,
 		cacheCalendar,
@@ -1149,18 +1165,17 @@ export default function CollectionsPage() {
 		const map = new Map<number, string | null>();
 		for (const item of cacheSorted) {
 			map.set(
-				item.subject_id,
+				item.collection.subject_id,
 				getDisplayLabel(
-					item,
-					cacheAiringMap,
-					cacheAiredEpMap,
+					item.collection,
+					{ group: item.group, weekday: item.weekday, airedEp: item.airedEp },
 					today,
 					cacheAiringTimeMap,
 				),
 			);
 		}
 		return map;
-	}, [cacheSorted, cacheAiringMap, cacheAiredEpMap, today, cacheAiringTimeMap]);
+	}, [cacheSorted, today, cacheAiringTimeMap]);
 	const isDisplayDataAvailable =
 		Boolean(uname) &&
 		collData !== undefined &&
@@ -1275,20 +1290,22 @@ export default function CollectionsPage() {
 
 	const activeCommittedState =
 		committedState?.scopeKey === committedScopeKey ? committedState : null;
-	const visibleSorted = activeCommittedState?.sorted ?? EMPTY_COLLECTIONS;
+	const visibleSorted = activeCommittedState?.sorted ?? EMPTY_SORTED;
 	const visibleDisplayLabelMap =
 		activeCommittedState?.displayLabelMap ?? EMPTY_DISPLAY_LABEL_MAP;
 
 	const filtered = searchText
 		? visibleSorted.filter((item) => {
 				const kw = buildSubjectKeywords(
-					item.subject.name_cn,
-					item.subject.name,
+					item.collection.subject.name_cn,
+					item.collection.subject.name,
 				);
 				const lower = searchText.toLowerCase();
 				return (
-					(item.subject.name_cn || "").toLowerCase().includes(lower) ||
-					(item.subject.name || "").toLowerCase().includes(lower) ||
+					(item.collection.subject.name_cn || "")
+						.toLowerCase()
+						.includes(lower) ||
+					(item.collection.subject.name || "").toLowerCase().includes(lower) ||
 					kw.some((k) => k.toLowerCase().includes(lower))
 				);
 			})
@@ -1414,7 +1431,7 @@ export default function CollectionsPage() {
 					const item = paged[focusedIndex];
 					if (item) {
 						const name = getSubjectTitleForCopy(
-							item.subject.name_cn || item.subject.name,
+							item.collection.subject.name_cn || item.collection.subject.name,
 						);
 						navigator.clipboard.writeText(name).then(async () => {
 							const { getCurrentWindow } = await import(
@@ -1457,7 +1474,7 @@ export default function CollectionsPage() {
 				handler: () => {
 					const item = paged[focusedIndex];
 					if (item) {
-						openSubject(item.subject.id);
+						openSubject(item.collection.subject.id);
 					}
 				},
 			},
@@ -1507,35 +1524,46 @@ export default function CollectionsPage() {
 
 				<div className="space-y-0.5">
 					{paged.map((item, index) => {
-						const s = item.subject;
+						const s = item.collection.subject;
 						const label = isWatching
-							? (visibleDisplayLabelMap.get(item.subject_id) ?? null)
+							? (visibleDisplayLabelMap.get(item.collection.subject_id) ?? null)
 							: null;
 						const weekday = s.air_weekday
 							? WEEKDAY_CN[s.air_weekday]
 							: undefined;
+						const showGroupHeader =
+							isWatching &&
+							(index === 0 || item.group !== paged[index - 1].group);
 						return (
-							<SubjectRow
-								key={s.id}
-								ref={(el) => {
-									itemRefs.current[index] = el;
-								}}
-								subjectId={s.id}
-								coverUrl={s.images?.small}
-								title={s.name_cn || s.name}
-								subtitle={s.name_cn ? s.name : undefined}
-								selected={index === focusedIndex}
-								onClick={() => setFocusedIndex(index)}
-								onDoubleClick={() => openSubject(s.id)}
-								accessories={
-									<>
-										{label && <Tag>{label}</Tag>}
-										{item.rate > 0 && <Rating score={item.rate} />}
-										{weekday && <Meta>{weekday}</Meta>}
-										<Meta>{SubjectTypeLabel[s.type]}</Meta>
-									</>
-								}
-							/>
+							<Fragment key={s.id}>
+								{showGroupHeader && (
+									<div className="px-1 pt-3 pb-1 text-[11px] font-medium text-fg-tertiary uppercase tracking-wider select-none">
+										{GROUP_LABEL[item.group]}
+									</div>
+								)}
+								<SubjectRow
+									ref={(el) => {
+										itemRefs.current[index] = el;
+									}}
+									subjectId={s.id}
+									coverUrl={s.images?.small}
+									title={s.name_cn || s.name}
+									subtitle={s.name_cn ? s.name : undefined}
+									selected={index === focusedIndex}
+									onClick={() => setFocusedIndex(index)}
+									onDoubleClick={() => openSubject(s.id)}
+									accessories={
+										<>
+											{label && <Tag>{label}</Tag>}
+											{item.collection.rate > 0 && (
+												<Rating score={item.collection.rate} />
+											)}
+											{weekday && <Meta>{weekday}</Meta>}
+											<Meta>{SubjectTypeLabel[s.type]}</Meta>
+										</>
+									}
+								/>
+							</Fragment>
 						);
 					})}
 				</div>
