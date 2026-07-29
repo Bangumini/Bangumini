@@ -28,3 +28,5 @@ src-tauri/gen/
 *.sw?
 docs/todo/
 AGENTS.md
+CONTEXT.md
+docs/adr

@@ -20,6 +20,7 @@ import {
 	getDisplayLabel,
 	WEEKDAY_CN,
 	GROUP_LABEL,
+	GROUP_COLOR,
 } from "@shared/sort-collections";
 import type { SortedCollection } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
@@ -1537,8 +1538,15 @@ export default function CollectionsPage() {
 						return (
 							<Fragment key={s.id}>
 								{showGroupHeader && (
-									<div className="px-1 pt-3 pb-1 text-[11px] font-medium text-fg-tertiary uppercase tracking-wider select-none">
-										{GROUP_LABEL[item.group]}
+									<div className="flex items-center gap-2 px-1 pt-3 pb-1.5 select-none">
+										<div
+											className="w-0.5 h-3.5 rounded-full shrink-0"
+											style={{ backgroundColor: GROUP_COLOR[item.group] }}
+										/>
+										<span className="text-[12px] font-medium text-fg-secondary whitespace-nowrap">
+											{GROUP_LABEL[item.group]}
+										</span>
+										<div className="flex-1 h-px bg-line" />
 									</div>
 								)}
 								<SubjectRow

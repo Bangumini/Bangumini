@@ -216,6 +216,16 @@ export const GROUP_LABEL: Record<SortedGroup, string> = {
 	completed: "已看完",
 };
 
+/** 分组左侧强调色 */
+export const GROUP_COLOR: Record<SortedGroup, string> = {
+	airing_not_caught: "#f59e0b", // 琥珀 — 需要追赶
+	finished_started: "#60a5fa", // 浅蓝 — 补番进行中
+	finished_unwatched: "#94a3b8", // 石板灰 — 尚未开始
+	airing_caught: "#34d399", // 翠绿 — 已同步
+	pre_air: "#e879f9", // 品红 — 即将开播
+	completed: "#eab308", // 金黄 — 已看完
+};
+
 export function getDisplayLabel(
 	c: UserCollection,
 	meta: CollectionMeta,
