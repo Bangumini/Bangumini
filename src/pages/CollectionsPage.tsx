@@ -1426,6 +1426,19 @@ export default function CollectionsPage() {
 				},
 			},
 			{
+				key: "o",
+				mod: true,
+				when: () => paged.length > 0,
+				handler: () => {
+					const item = paged[focusedIndex];
+					if (item) {
+						import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
+							openUrl(`https://bgm.tv/subject/${item.collection.subject.id}`);
+						});
+					}
+				},
+			},
+			{
 				key: "Enter",
 				mod: true,
 				handler: () => {
