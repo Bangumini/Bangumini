@@ -1576,9 +1576,12 @@ export default function CollectionsPage() {
 									accessories={
 										<>
 											{label && <Tag>{label}</Tag>}
-											{item.collection.rate > 0 && (
-												<Rating score={item.collection.rate} />
-											)}
+											{(s.score ?? s.rating?.score) ? (
+												<Rating score={s.score ?? s.rating!.score} />
+											) : null}
+											{item.collection.subject.rank ? (
+												<Meta>#{item.collection.subject.rank}</Meta>
+											) : null}
 											{weekday && <Meta>{weekday}</Meta>}
 											<Meta>{SubjectTypeLabel[s.type]}</Meta>
 										</>
