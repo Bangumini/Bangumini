@@ -1,162 +1,185 @@
 import Database from "@tauri-apps/plugin-sql";
 import type {
-  Episode,
-  PagedResponse,
-  RelatedCharacter,
-  RelatedPerson,
-  Subject,
-  SubjectRelation,
-  SubjectSmall,
-  UserCollection,
+	Episode,
+	PagedResponse,
+	RelatedCharacter,
+	RelatedPerson,
+	Subject,
+	SubjectRelation,
+	SubjectSmall,
+	UserCollection,
 } from "@shared/api/types";
 
 const DB_URL = "sqlite:bangumini.db";
 
 type PayloadRow = {
-  payload_json: string;
+	payload_json: string;
 };
 
 type TimedPayloadRow = PayloadRow & {
-  updated_at: number;
-  accessed_at?: number | null;
+	updated_at: number;
+	accessed_at?: number | null;
 };
 
 type ImageCacheRow = {
-  local_path: string;
-  updated_at: number;
-  accessed_at?: number | null;
+	local_path: string;
+	updated_at: number;
+	accessed_at?: number | null;
 };
 
 type CacheEntryRow = {
-  cache_key: string;
-  payload_json: string;
-  updated_at: number;
-  accessed_at?: number | null;
+	cache_key: string;
+	payload_json: string;
+	updated_at: number;
+	accessed_at?: number | null;
 };
 
 type CollectionTaskQueueRow = {
-  id: string;
-  kind: string;
-  payload_json: string;
-  status: PersistentCollectionTaskStatus;
-  attempt_count: number;
-  last_error: string | null;
-  run_after: number;
-  created_at: number;
-  updated_at: number;
+	id: string;
+	kind: string;
+	payload_json: string;
+	status: PersistentCollectionTaskStatus;
+	attempt_count: number;
+	last_error: string | null;
+	run_after: number;
+	created_at: number;
+	updated_at: number;
 };
 
 export type CachedValueEntry<T> = {
-  payload: T;
-  updatedAt: number;
-  accessedAt: number;
+	payload: T;
+	updatedAt: number;
+	accessedAt: number;
 };
 
 export type CachedImageRecord = {
-  remoteUrl: string;
-  localPath: string;
-  updatedAt: number;
+	remoteUrl: string;
+	localPath: string;
+	updatedAt: number;
 };
 
-export type PersistentCollectionTaskStatus = "pending" | "running" | "failed" | "done";
+export type PersistentCollectionTaskStatus =
+	| "pending"
+	| "running"
+	| "failed"
+	| "done";
 
 export type PersistentCollectionTask<T = unknown> = {
-  id: string;
-  kind: string;
-  payload: T;
-  status: PersistentCollectionTaskStatus;
-  attemptCount: number;
-  lastError: string | null;
-  runAfter: number;
-  createdAt: number;
-  updatedAt: number;
+	id: string;
+	kind: string;
+	payload: T;
+	status: PersistentCollectionTaskStatus;
+	attemptCount: number;
+	lastError: string | null;
+	runAfter: number;
+	createdAt: number;
+	updatedAt: number;
 };
 
 let dbPromise: Promise<Database> | null = null;
 export const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 100;
 
 const PLACEHOLDER_IMAGE_RE =
-  /(^|[/_.-])(?:no[_\s-]?image|noimage|placeholder)([/_.-]|$)|[/_.-]default\.(?:jpg|jpeg|png|webp)(?:[?#]|$)/i;
+	/(^|[/_.-])(?:no[_\s-]?image|noimage|placeholder)([/_.-]|$)|[/_.-]default\.(?:jpg|jpeg|png|webp)(?:[?#]|$)/i;
 
 export function isUsefulImageUrl(url?: string | null): boolean {
-  if (!url) return false;
-  const normalized = (() => {
-    try {
-      return decodeURIComponent(url);
-    } catch {
-      return url;
-    }
-  })();
-  return !PLACEHOLDER_IMAGE_RE.test(normalized);
+	if (!url) return false;
+	const normalized = (() => {
+		try {
+			return decodeURIComponent(url);
+		} catch {
+			return url;
+		}
+	})();
+	return !PLACEHOLDER_IMAGE_RE.test(normalized);
 }
 
-export function getPreferredSubjectCoverUrl(subject: Subject | SubjectSmall | null | undefined) {
-  const images = subject?.images;
-  if (!images) return null;
-  return (
-    [images.small, images.common, images.medium, images.large, images.grid].find(isUsefulImageUrl) ??
-    null
-  );
+export function getPreferredSubjectCoverUrl(
+	subject: Subject | SubjectSmall | null | undefined,
+) {
+	const images = subject?.images;
+	if (!images) return null;
+	return (
+		[
+			images.small,
+			images.common,
+			images.medium,
+			images.large,
+			images.grid,
+		].find(isUsefulImageUrl) ?? null
+	);
 }
 
 function mergeImageUrl(current: string, incoming: string): string {
-  if (isUsefulImageUrl(incoming)) return incoming;
-  if (isUsefulImageUrl(current)) return current;
-  return incoming || current;
+	if (isUsefulImageUrl(incoming)) return incoming;
+	if (isUsefulImageUrl(current)) return current;
+	return incoming || current;
 }
 
-function mergeSubjectImages(current: Subject["images"], incoming: Subject["images"]) {
-  return {
-    large: mergeImageUrl(current?.large, incoming?.large),
-    common: mergeImageUrl(current?.common, incoming?.common),
-    medium: mergeImageUrl(current?.medium, incoming?.medium),
-    small: mergeImageUrl(current?.small, incoming?.small),
-    grid: mergeImageUrl(current?.grid, incoming?.grid),
-  };
+function mergeSubjectImages(
+	current: Subject["images"],
+	incoming: Subject["images"],
+) {
+	return {
+		large: mergeImageUrl(current?.large, incoming?.large),
+		common: mergeImageUrl(current?.common, incoming?.common),
+		medium: mergeImageUrl(current?.medium, incoming?.medium),
+		small: mergeImageUrl(current?.small, incoming?.small),
+		grid: mergeImageUrl(current?.grid, incoming?.grid),
+	};
 }
 
-function mergeSubjectPreview(current: Subject | null, incoming: Subject): Subject {
-  if (!current) return incoming;
+function mergeSubjectPreview(
+	current: Subject | null,
+	incoming: Subject,
+): Subject {
+	if (!current) return incoming;
 
-  return {
-    ...current,
-    id: incoming.id,
-    name: incoming.name || current.name,
-    name_cn: incoming.name_cn || current.name_cn,
-    type: incoming.type || current.type,
-    images: mergeSubjectImages(current.images, incoming.images),
-    summary: incoming.summary || current.summary,
-    eps: incoming.eps || current.eps,
-    total_episodes: incoming.total_episodes || current.total_episodes,
-    rating: incoming.rating?.total ? incoming.rating : current.rating,
-    rank: incoming.rank || current.rank,
-    date: incoming.date || current.date,
-    air_weekday: incoming.air_weekday ?? current.air_weekday,
-    tags: current.tags ?? incoming.tags,
-  };
+	return {
+		...current,
+		id: incoming.id,
+		name: incoming.name || current.name,
+		name_cn: incoming.name_cn || current.name_cn,
+		type: incoming.type || current.type,
+		images: mergeSubjectImages(current.images, incoming.images),
+		summary: incoming.summary || current.summary,
+		eps: incoming.eps || current.eps,
+		total_episodes: incoming.total_episodes || current.total_episodes,
+		rating: incoming.rating?.total ? incoming.rating : current.rating,
+		rank: incoming.rank || current.rank,
+		date: incoming.date || current.date,
+		air_weekday: incoming.air_weekday ?? current.air_weekday,
+		tags: current.tags ?? incoming.tags,
+	};
 }
 
 function mergeSubjectFull(current: Subject | null, incoming: Subject): Subject {
-  if (!current) return incoming;
+	if (!current) return incoming;
 
-  return {
-    ...incoming,
-    images: mergeSubjectImages(current.images, incoming.images),
-    rating: incoming.rating?.total ? incoming.rating : current.rating,
-    rank: incoming.rank || current.rank,
-    air_weekday: incoming.air_weekday ?? current.air_weekday,
-  };
+	return {
+		...incoming,
+		images: mergeSubjectImages(current.images, incoming.images),
+		rating: incoming.rating?.total ? incoming.rating : current.rating,
+		rank: incoming.rank || current.rank,
+		air_weekday: incoming.air_weekday ?? current.air_weekday,
+	};
 }
 
 async function ensureAccessedAtColumn(db: Database, tableName: string) {
-  const columns = await db.select<Array<{ name: string }>>(`PRAGMA table_info(${tableName})`);
-  if (columns.some((column) => column.name === "accessed_at")) return;
-  await db.execute(`ALTER TABLE ${tableName} ADD COLUMN accessed_at INTEGER NOT NULL DEFAULT 0`);
-  await db.execute(`UPDATE ${tableName} SET accessed_at = updated_at WHERE accessed_at = 0`);
+	const columns = await db.select<Array<{ name: string }>>(
+		`PRAGMA table_info(${tableName})`,
+	);
+	if (columns.some((column) => column.name === "accessed_at")) return;
+	await db.execute(
+		`ALTER TABLE ${tableName} ADD COLUMN accessed_at INTEGER NOT NULL DEFAULT 0`,
+	);
+	await db.execute(
+		`UPDATE ${tableName} SET accessed_at = updated_at WHERE accessed_at = 0`,
+	);
 }
 
 async function initializeSchema(db: Database) {
-  await db.execute(`
+	await db.execute(`
     CREATE TABLE IF NOT EXISTS subjects (
       id INTEGER PRIMARY KEY,
       payload_json TEXT NOT NULL,
@@ -165,7 +188,7 @@ async function initializeSchema(db: Database) {
     )
   `);
 
-  await db.execute(`
+	await db.execute(`
     CREATE TABLE IF NOT EXISTS subject_collections (
       username TEXT NOT NULL,
       subject_id INTEGER NOT NULL,
@@ -176,7 +199,7 @@ async function initializeSchema(db: Database) {
     )
   `);
 
-  await db.execute(`
+	await db.execute(`
     CREATE TABLE IF NOT EXISTS subject_cache_entries (
       subject_id INTEGER NOT NULL,
       kind TEXT NOT NULL,
@@ -187,7 +210,7 @@ async function initializeSchema(db: Database) {
     )
   `);
 
-  await db.execute(`
+	await db.execute(`
     CREATE TABLE IF NOT EXISTS cache_entries (
       cache_key TEXT PRIMARY KEY,
       payload_json TEXT NOT NULL,
@@ -196,7 +219,7 @@ async function initializeSchema(db: Database) {
     )
   `);
 
-  await db.execute(`
+	await db.execute(`
     CREATE TABLE IF NOT EXISTS image_cache (
       remote_url TEXT PRIMARY KEY,
       local_path TEXT NOT NULL,
@@ -205,7 +228,7 @@ async function initializeSchema(db: Database) {
     )
   `);
 
-  await db.execute(`
+	await db.execute(`
     CREATE TABLE IF NOT EXISTS collection_task_queue (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
@@ -219,649 +242,787 @@ async function initializeSchema(db: Database) {
     )
   `);
 
-  await db.execute(`
+	await db.execute(`
     CREATE INDEX IF NOT EXISTS idx_collection_task_queue_status_run_after
     ON collection_task_queue (status, run_after, created_at)
   `);
 
-  await ensureAccessedAtColumn(db, "subjects");
-  await ensureAccessedAtColumn(db, "subject_collections");
-  await ensureAccessedAtColumn(db, "subject_cache_entries");
-  await ensureAccessedAtColumn(db, "cache_entries");
-  await ensureAccessedAtColumn(db, "image_cache");
+	await ensureAccessedAtColumn(db, "subjects");
+	await ensureAccessedAtColumn(db, "subject_collections");
+	await ensureAccessedAtColumn(db, "subject_cache_entries");
+	await ensureAccessedAtColumn(db, "cache_entries");
+	await ensureAccessedAtColumn(db, "image_cache");
 }
 
 async function getDatabase() {
-  if (!dbPromise) {
-    dbPromise = Database.load(DB_URL).then(async (db) => {
-      await initializeSchema(db);
-      return db;
-    });
-  }
-  return dbPromise;
+	if (!dbPromise) {
+		dbPromise = Database.load(DB_URL).then(async (db) => {
+			await initializeSchema(db);
+			return db;
+		});
+	}
+	return dbPromise;
 }
 
-async function withDatabase<T>(fn: (db: Database) => Promise<T>, fallback: T): Promise<T> {
-  try {
-    const db = await getDatabase();
-    return await fn(db);
-  } catch (error) {
-    console.warn("[sqlite-cache] storage unavailable", error);
-    return fallback;
-  }
+async function withDatabase<T>(
+	fn: (db: Database) => Promise<T>,
+	fallback: T,
+): Promise<T> {
+	try {
+		const db = await getDatabase();
+		return await fn(db);
+	} catch (error) {
+		console.warn("[sqlite-cache] storage unavailable", error);
+		return fallback;
+	}
 }
 
 function parsePayload<T>(rows: PayloadRow[]): T | null {
-  const raw = rows[0]?.payload_json;
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
+	const raw = rows[0]?.payload_json;
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		return null;
+	}
 }
 
-function getAccessedAt(row: { updated_at: number; accessed_at?: number | null }) {
-  return row.accessed_at ?? row.updated_at;
+function getAccessedAt(row: {
+	updated_at: number;
+	accessed_at?: number | null;
+}) {
+	return row.accessed_at ?? row.updated_at;
 }
 
-function isFresh(row: { updated_at: number; accessed_at?: number | null }, now = Date.now()) {
-  return now - getAccessedAt(row) <= CACHE_TTL_MS;
+function isFresh(
+	row: { updated_at: number; accessed_at?: number | null },
+	now = Date.now(),
+) {
+	return now - getAccessedAt(row) <= CACHE_TTL_MS;
 }
 
-function isUpdatedWithin(row: { updated_at: number }, maxAgeMs: number, now = Date.now()) {
-  return now - row.updated_at <= maxAgeMs;
+function isUpdatedWithin(
+	row: { updated_at: number },
+	maxAgeMs: number,
+	now = Date.now(),
+) {
+	return now - row.updated_at <= maxAgeMs;
 }
 
 function parseFreshPayload<T>(rows: TimedPayloadRow[]): T | null {
-  const row = rows[0];
-  if (!row || !isFresh(row)) return null;
-  return parsePayload<T>(rows);
+	const row = rows[0];
+	if (!row || !isFresh(row)) return null;
+	return parsePayload<T>(rows);
 }
 
-function parseRecentlyUpdatedPayload<T>(rows: TimedPayloadRow[], maxAgeMs: number): T | null {
-  const row = rows[0];
-  if (!row || !isUpdatedWithin(row, maxAgeMs)) return null;
-  return parsePayload<T>(rows);
+function parseRecentlyUpdatedPayload<T>(
+	rows: TimedPayloadRow[],
+	maxAgeMs: number,
+): T | null {
+	const row = rows[0];
+	if (!row || !isUpdatedWithin(row, maxAgeMs)) return null;
+	return parsePayload<T>(rows);
 }
 
 async function touchSubject(db: Database, subjectId: number) {
-  await db.execute("UPDATE subjects SET accessed_at = $1 WHERE id = $2", [Date.now(), subjectId]);
+	await db.execute("UPDATE subjects SET accessed_at = $1 WHERE id = $2", [
+		Date.now(),
+		subjectId,
+	]);
 }
 
-async function touchSubjectEntry(db: Database, subjectId: number, kind: string) {
-  await db.execute(
-    "UPDATE subject_cache_entries SET accessed_at = $1 WHERE subject_id = $2 AND kind = $3",
-    [Date.now(), subjectId, kind],
-  );
+async function touchSubjectEntry(
+	db: Database,
+	subjectId: number,
+	kind: string,
+) {
+	await db.execute(
+		"UPDATE subject_cache_entries SET accessed_at = $1 WHERE subject_id = $2 AND kind = $3",
+		[Date.now(), subjectId, kind],
+	);
 }
 
-async function touchCollection(db: Database, username: string, subjectId: number) {
-  await db.execute(
-    "UPDATE subject_collections SET accessed_at = $1 WHERE username = $2 AND subject_id = $3",
-    [Date.now(), username, subjectId],
-  );
+async function touchCollection(
+	db: Database,
+	username: string,
+	subjectId: number,
+) {
+	await db.execute(
+		"UPDATE subject_collections SET accessed_at = $1 WHERE username = $2 AND subject_id = $3",
+		[Date.now(), username, subjectId],
+	);
 }
 
 async function touchCacheEntry(db: Database, cacheKey: string) {
-  await db.execute("UPDATE cache_entries SET accessed_at = $1 WHERE cache_key = $2", [
-    Date.now(),
-    cacheKey,
-  ]);
+	await db.execute(
+		"UPDATE cache_entries SET accessed_at = $1 WHERE cache_key = $2",
+		[Date.now(), cacheKey],
+	);
 }
 
 async function touchImage(db: Database, remoteUrl: string) {
-  await db.execute("UPDATE image_cache SET accessed_at = $1 WHERE remote_url = $2", [
-    Date.now(),
-    remoteUrl,
-  ]);
+	await db.execute(
+		"UPDATE image_cache SET accessed_at = $1 WHERE remote_url = $2",
+		[Date.now(), remoteUrl],
+	);
 }
 
 function subjectFromSmall(subject: SubjectSmall): Subject {
-  return {
-    id: subject.id,
-    name: subject.name,
-    name_cn: subject.name_cn,
-    type: subject.type,
-    images: subject.images,
-    summary: subject.summary,
-    eps: 0,
-    total_episodes: 0,
-    rating: subject.rating ?? { total: 0, count: {}, score: 0 },
-    rank: subject.rank,
-    date: subject.air_date,
-    air_weekday: subject.air_weekday,
-  };
+	return {
+		id: subject.id,
+		name: subject.name,
+		name_cn: subject.name_cn,
+		type: subject.type,
+		images: subject.images,
+		summary: subject.summary,
+		eps: 0,
+		total_episodes: 0,
+		rating: subject.rating ?? { total: 0, count: {}, score: 0 },
+		rank: subject.rank,
+		date: subject.air_date,
+		air_weekday: subject.air_weekday,
+	};
 }
 
-function findSubjectInPayload(subjectId: number, payload: unknown): Subject | null {
-  if (!payload || typeof payload !== "object") return null;
+function findSubjectInPayload(
+	subjectId: number,
+	payload: unknown,
+): Subject | null {
+	if (!payload || typeof payload !== "object") return null;
 
-  if (Array.isArray(payload)) {
-    for (const item of payload) {
-      const found = findSubjectInPayload(subjectId, item);
-      if (found) return found;
-    }
-    return null;
-  }
+	if (Array.isArray(payload)) {
+		for (const item of payload) {
+			const found = findSubjectInPayload(subjectId, item);
+			if (found) return found;
+		}
+		return null;
+	}
 
-  const record = payload as Record<string, unknown>;
-  if (record.id === subjectId && typeof record.name === "string") {
-    if ("air_date" in record) return subjectFromSmall(record as unknown as SubjectSmall);
-    return record as unknown as Subject;
-  }
+	const record = payload as Record<string, unknown>;
+	if (record.id === subjectId && typeof record.name === "string") {
+		if ("air_date" in record)
+			return subjectFromSmall(record as unknown as SubjectSmall);
+		return record as unknown as Subject;
+	}
 
-  if (record.subject && typeof record.subject === "object") {
-    const found = findSubjectInPayload(subjectId, record.subject);
-    if (found) return found;
-  }
+	if (record.subject && typeof record.subject === "object") {
+		const found = findSubjectInPayload(subjectId, record.subject);
+		if (found) return found;
+	}
 
-  if (Array.isArray(record.data)) {
-    const found = findSubjectInPayload(subjectId, record.data);
-    if (found) return found;
-  }
+	if (Array.isArray(record.data)) {
+		const found = findSubjectInPayload(subjectId, record.data);
+		if (found) return found;
+	}
 
-  if (Array.isArray(record.items)) {
-    const found = findSubjectInPayload(subjectId, record.items);
-    if (found) return found;
-  }
+	if (Array.isArray(record.items)) {
+		const found = findSubjectInPayload(subjectId, record.items);
+		if (found) return found;
+	}
 
-  return null;
+	return null;
 }
 
-async function readSubjectEntry<T>(subjectId: number, kind: string): Promise<T | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM subject_cache_entries WHERE subject_id = $1 AND kind = $2 LIMIT 1",
-      [subjectId, kind],
-    );
-    const payload = parseFreshPayload<T>(rows);
-    if (payload) await touchSubjectEntry(db, subjectId, kind);
-    return payload;
-  }, null);
+async function readSubjectEntry<T>(
+	subjectId: number,
+	kind: string,
+): Promise<T | null> {
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM subject_cache_entries WHERE subject_id = $1 AND kind = $2 LIMIT 1",
+			[subjectId, kind],
+		);
+		const payload = parseFreshPayload<T>(rows);
+		if (payload) await touchSubjectEntry(db, subjectId, kind);
+		return payload;
+	}, null);
 }
 
 async function readSubjectEntryWithin<T>(
-  subjectId: number,
-  kind: string,
-  maxAgeMs: number,
+	subjectId: number,
+	kind: string,
+	maxAgeMs: number,
 ): Promise<T | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM subject_cache_entries WHERE subject_id = $1 AND kind = $2 LIMIT 1",
-      [subjectId, kind],
-    );
-    const payload = parseRecentlyUpdatedPayload<T>(rows, maxAgeMs);
-    if (payload) await touchSubjectEntry(db, subjectId, kind);
-    return payload;
-  }, null);
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM subject_cache_entries WHERE subject_id = $1 AND kind = $2 LIMIT 1",
+			[subjectId, kind],
+		);
+		const payload = parseRecentlyUpdatedPayload<T>(rows, maxAgeMs);
+		if (payload) await touchSubjectEntry(db, subjectId, kind);
+		return payload;
+	}, null);
 }
 
-async function writeSubjectEntry(subjectId: number, kind: string, payload: unknown) {
-  await withDatabase(async (db) => {
-    await db.execute(
-      `INSERT INTO subject_cache_entries (subject_id, kind, payload_json, updated_at, accessed_at)
+async function writeSubjectEntry(
+	subjectId: number,
+	kind: string,
+	payload: unknown,
+) {
+	await withDatabase(async (db) => {
+		await db.execute(
+			`INSERT INTO subject_cache_entries (subject_id, kind, payload_json, updated_at, accessed_at)
        VALUES ($1, $2, $3, $4, $4)
        ON CONFLICT(subject_id, kind) DO UPDATE SET
          payload_json = excluded.payload_json,
          updated_at = excluded.updated_at,
          accessed_at = excluded.updated_at`,
-      [subjectId, kind, JSON.stringify(payload), Date.now()],
-    );
-  }, undefined);
+			[subjectId, kind, JSON.stringify(payload), Date.now()],
+		);
+	}, undefined);
 }
 
-export async function readCachedSubject(subjectId: number): Promise<Subject | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM subjects WHERE id = $1 LIMIT 1",
-      [subjectId],
-    );
-    const payload = parseFreshPayload<Subject>(rows);
-    if (payload) await touchSubject(db, subjectId);
-    return payload;
-  }, null);
+export async function readCachedSubject(
+	subjectId: number,
+): Promise<Subject | null> {
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM subjects WHERE id = $1 LIMIT 1",
+			[subjectId],
+		);
+		const payload = parseFreshPayload<Subject>(rows);
+		if (payload) await touchSubject(db, subjectId);
+		return payload;
+	}, null);
 }
 
 export async function readCachedSubjectWithin(
-  subjectId: number,
-  maxAgeMs: number,
+	subjectId: number,
+	maxAgeMs: number,
 ): Promise<Subject | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM subjects WHERE id = $1 LIMIT 1",
-      [subjectId],
-    );
-    const payload = parseRecentlyUpdatedPayload<Subject>(rows, maxAgeMs);
-    if (payload) await touchSubject(db, subjectId);
-    return payload;
-  }, null);
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM subjects WHERE id = $1 LIMIT 1",
+			[subjectId],
+		);
+		const payload = parseRecentlyUpdatedPayload<Subject>(rows, maxAgeMs);
+		if (payload) await touchSubject(db, subjectId);
+		return payload;
+	}, null);
 }
 
 export async function writeCachedSubject(subject: Subject): Promise<Subject> {
-  const current = await readCachedSubject(subject.id);
-  const payload = mergeSubjectFull(current, subject);
+	const current = await readCachedSubject(subject.id);
+	const payload = mergeSubjectFull(current, subject);
 
-  await withDatabase(async (db) => {
-    await db.execute(
-      `INSERT INTO subjects (id, payload_json, updated_at, accessed_at)
+	await withDatabase(async (db) => {
+		await db.execute(
+			`INSERT INTO subjects (id, payload_json, updated_at, accessed_at)
        VALUES ($1, $2, $3, $3)
        ON CONFLICT(id) DO UPDATE SET
          payload_json = excluded.payload_json,
          updated_at = excluded.updated_at,
          accessed_at = excluded.updated_at`,
-      [payload.id, JSON.stringify(payload), Date.now()],
-    );
-  }, undefined);
+			[payload.id, JSON.stringify(payload), Date.now()],
+		);
+	}, undefined);
 
-  return payload;
+	return payload;
 }
 
-export async function writeCachedSubjectPreview(subject: Subject | SubjectSmall) {
-  const incoming = "air_date" in subject ? subjectFromSmall(subject) : subject;
-  const current = await readCachedSubject(incoming.id);
-  const merged = mergeSubjectPreview(current, incoming);
+export async function writeCachedSubjectPreview(
+	subject: Subject | SubjectSmall,
+) {
+	const incoming = "air_date" in subject ? subjectFromSmall(subject) : subject;
+	const current = await readCachedSubject(incoming.id);
+	const merged = mergeSubjectPreview(current, incoming);
 
-  if ("air_date" in subject) {
-    await writeCachedSubject(merged);
-    return;
-  }
-  await writeCachedSubject(merged);
+	if ("air_date" in subject) {
+		await writeCachedSubject(merged);
+		return;
+	}
+	await writeCachedSubject(merged);
 }
 
-export async function writeCachedSubjectPreviews(subjects: Array<Subject | SubjectSmall>) {
-  await Promise.all(subjects.map((subject) => writeCachedSubjectPreview(subject)));
+export async function writeCachedSubjectPreviews(
+	subjects: Array<Subject | SubjectSmall>,
+) {
+	await Promise.all(
+		subjects.map((subject) => writeCachedSubjectPreview(subject)),
+	);
 }
 
-export async function readCachedSubjectDeep(subjectId: number): Promise<Subject | null> {
-  const cached = await readCachedSubject(subjectId);
-  if (cached) return cached;
+export async function readCachedSubjectDeep(
+	subjectId: number,
+): Promise<Subject | null> {
+	const cached = await readCachedSubject(subjectId);
+	if (cached) return cached;
 
-  return withDatabase(async (db) => {
-    const rows = await db.select<CacheEntryRow[]>(
-      "SELECT cache_key, payload_json, updated_at, accessed_at FROM cache_entries",
-    );
+	return withDatabase(async (db) => {
+		const rows = await db.select<CacheEntryRow[]>(
+			"SELECT cache_key, payload_json, updated_at, accessed_at FROM cache_entries",
+		);
 
-    for (const row of rows) {
-      if (!isFresh(row)) continue;
-      try {
-        const payload = JSON.parse(row.payload_json) as unknown;
-        const subject = findSubjectInPayload(subjectId, payload);
-        if (subject) {
-          await touchCacheEntry(db, row.cache_key);
-          await writeCachedSubject(subject);
-          return subject;
-        }
-      } catch {
-        // Ignore malformed cache entries.
-      }
-    }
+		for (const row of rows) {
+			if (!isFresh(row)) continue;
+			try {
+				const payload = JSON.parse(row.payload_json) as unknown;
+				const subject = findSubjectInPayload(subjectId, payload);
+				if (subject) {
+					await touchCacheEntry(db, row.cache_key);
+					await writeCachedSubject(subject);
+					return subject;
+				}
+			} catch {
+				// Ignore malformed cache entries.
+			}
+		}
 
-    return null;
-  }, null);
+		return null;
+	}, null);
 }
 
 export async function readCachedSubjectDeepWithin(
-  subjectId: number,
-  maxAgeMs: number,
+	subjectId: number,
+	maxAgeMs: number,
 ): Promise<Subject | null> {
-  const cached = await readCachedSubjectWithin(subjectId, maxAgeMs);
-  if (cached) return cached;
+	const cached = await readCachedSubjectWithin(subjectId, maxAgeMs);
+	if (cached) return cached;
 
-  return withDatabase(async (db) => {
-    const rows = await db.select<CacheEntryRow[]>(
-      "SELECT cache_key, payload_json, updated_at, accessed_at FROM cache_entries WHERE updated_at >= $1",
-      [Date.now() - maxAgeMs],
-    );
+	return withDatabase(async (db) => {
+		const rows = await db.select<CacheEntryRow[]>(
+			"SELECT cache_key, payload_json, updated_at, accessed_at FROM cache_entries WHERE updated_at >= $1",
+			[Date.now() - maxAgeMs],
+		);
 
-    for (const row of rows) {
-      try {
-        const payload = JSON.parse(row.payload_json) as unknown;
-        const subject = findSubjectInPayload(subjectId, payload);
-        if (subject) {
-          await touchCacheEntry(db, row.cache_key);
-          await writeCachedSubject(subject);
-          return subject;
-        }
-      } catch {
-        // Ignore malformed cache entries.
-      }
-    }
+		for (const row of rows) {
+			try {
+				const payload = JSON.parse(row.payload_json) as unknown;
+				const subject = findSubjectInPayload(subjectId, payload);
+				if (subject) {
+					await touchCacheEntry(db, row.cache_key);
+					await writeCachedSubject(subject);
+					return subject;
+				}
+			} catch {
+				// Ignore malformed cache entries.
+			}
+		}
 
-    return null;
-  }, null);
+		return null;
+	}, null);
 }
 
 export async function readCachedCollection(
-  username: string,
-  subjectId: number,
+	username: string,
+	subjectId: number,
 ): Promise<UserCollection | null> {
-  if (!username) return null;
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM subject_collections WHERE username = $1 AND subject_id = $2 LIMIT 1",
-      [username, subjectId],
-    );
-    const payload = parseFreshPayload<UserCollection>(rows);
-    if (payload) await touchCollection(db, username, subjectId);
-    return payload;
-  }, null);
+	if (!username) return null;
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM subject_collections WHERE username = $1 AND subject_id = $2 LIMIT 1",
+			[username, subjectId],
+		);
+		const payload = parseFreshPayload<UserCollection>(rows);
+		if (payload) await touchCollection(db, username, subjectId);
+		return payload;
+	}, null);
 }
 
 export async function readCachedCollectionWithin(
-  username: string,
-  subjectId: number,
-  maxAgeMs: number,
+	username: string,
+	subjectId: number,
+	maxAgeMs: number,
 ): Promise<UserCollection | null> {
-  if (!username) return null;
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM subject_collections WHERE username = $1 AND subject_id = $2 LIMIT 1",
-      [username, subjectId],
-    );
-    const payload = parseRecentlyUpdatedPayload<UserCollection>(rows, maxAgeMs);
-    if (payload) await touchCollection(db, username, subjectId);
-    return payload;
-  }, null);
+	if (!username) return null;
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM subject_collections WHERE username = $1 AND subject_id = $2 LIMIT 1",
+			[username, subjectId],
+		);
+		const payload = parseRecentlyUpdatedPayload<UserCollection>(rows, maxAgeMs);
+		if (payload) await touchCollection(db, username, subjectId);
+		return payload;
+	}, null);
 }
 
-export async function writeCachedCollection(username: string, collection: UserCollection | null) {
-  if (!username || !collection) return;
-  await withDatabase(async (db) => {
-    await db.execute(
-      `INSERT INTO subject_collections (username, subject_id, payload_json, updated_at, accessed_at)
+/** 读取用户所有已缓存的收藏条目 */
+export async function readAllCachedCollections(
+	username: string,
+): Promise<UserCollection[]> {
+	if (!username) return [];
+	return withDatabase(async (db) => {
+		const rows = await db.select<{ payload_json: string }[]>(
+			"SELECT payload_json FROM subject_collections WHERE username = $1",
+			[username],
+		);
+		const collections: UserCollection[] = [];
+		for (const row of rows) {
+			try {
+				const col = JSON.parse(row.payload_json) as UserCollection;
+				if (col && typeof col.subject_id === "number") {
+					collections.push(col);
+				}
+			} catch {
+				// 忽略损坏的缓存条目
+			}
+		}
+		return collections;
+	}, []);
+}
+
+export async function writeCachedCollection(
+	username: string,
+	collection: UserCollection | null,
+) {
+	if (!username || !collection) return;
+	await withDatabase(async (db) => {
+		await db.execute(
+			`INSERT INTO subject_collections (username, subject_id, payload_json, updated_at, accessed_at)
        VALUES ($1, $2, $3, $4, $4)
        ON CONFLICT(username, subject_id) DO UPDATE SET
          payload_json = excluded.payload_json,
          updated_at = excluded.updated_at,
          accessed_at = excluded.updated_at`,
-      [username, collection.subject_id, JSON.stringify(collection), Date.now()],
-    );
-  }, undefined);
+			[username, collection.subject_id, JSON.stringify(collection), Date.now()],
+		);
+	}, undefined);
 }
 
-export async function deleteCachedCollection(username: string, subjectId: number) {
-  if (!username) return;
-  await withDatabase(async (db) => {
-    await db.execute(
-      "DELETE FROM subject_collections WHERE username = $1 AND subject_id = $2",
-      [username, subjectId],
-    );
-  }, undefined);
+export async function deleteCachedCollection(
+	username: string,
+	subjectId: number,
+) {
+	if (!username) return;
+	await withDatabase(async (db) => {
+		await db.execute(
+			"DELETE FROM subject_collections WHERE username = $1 AND subject_id = $2",
+			[username, subjectId],
+		);
+	}, undefined);
 }
 
-export function readCachedEpisodes(subjectId: number): Promise<PagedResponse<Episode> | null> {
-  return readSubjectEntry<PagedResponse<Episode>>(subjectId, "episodes");
+export function readCachedEpisodes(
+	subjectId: number,
+): Promise<PagedResponse<Episode> | null> {
+	return readSubjectEntry<PagedResponse<Episode>>(subjectId, "episodes");
 }
 
 export function readCachedEpisodesWithin(
-  subjectId: number,
-  maxAgeMs: number,
+	subjectId: number,
+	maxAgeMs: number,
 ): Promise<PagedResponse<Episode> | null> {
-  return readSubjectEntryWithin<PagedResponse<Episode>>(subjectId, "episodes", maxAgeMs);
+	return readSubjectEntryWithin<PagedResponse<Episode>>(
+		subjectId,
+		"episodes",
+		maxAgeMs,
+	);
 }
 
-export function writeCachedEpisodes(subjectId: number, episodes: PagedResponse<Episode>) {
-  return writeSubjectEntry(subjectId, "episodes", episodes);
+export function writeCachedEpisodes(
+	subjectId: number,
+	episodes: PagedResponse<Episode>,
+) {
+	return writeSubjectEntry(subjectId, "episodes", episodes);
 }
 
-export function readCachedPersons(subjectId: number): Promise<RelatedPerson[] | null> {
-  return readSubjectEntry<RelatedPerson[]>(subjectId, "persons");
+export function readCachedPersons(
+	subjectId: number,
+): Promise<RelatedPerson[] | null> {
+	return readSubjectEntry<RelatedPerson[]>(subjectId, "persons");
 }
 
 export function readCachedPersonsWithin(
-  subjectId: number,
-  maxAgeMs: number,
+	subjectId: number,
+	maxAgeMs: number,
 ): Promise<RelatedPerson[] | null> {
-  return readSubjectEntryWithin<RelatedPerson[]>(subjectId, "persons", maxAgeMs);
+	return readSubjectEntryWithin<RelatedPerson[]>(
+		subjectId,
+		"persons",
+		maxAgeMs,
+	);
 }
 
-export function writeCachedPersons(subjectId: number, persons: RelatedPerson[]) {
-  return writeSubjectEntry(subjectId, "persons", persons);
+export function writeCachedPersons(
+	subjectId: number,
+	persons: RelatedPerson[],
+) {
+	return writeSubjectEntry(subjectId, "persons", persons);
 }
 
-export function readCachedCharacters(subjectId: number): Promise<RelatedCharacter[] | null> {
-  return readSubjectEntry<RelatedCharacter[]>(subjectId, "characters");
+export function readCachedCharacters(
+	subjectId: number,
+): Promise<RelatedCharacter[] | null> {
+	return readSubjectEntry<RelatedCharacter[]>(subjectId, "characters");
 }
 
 export function readCachedCharactersWithin(
-  subjectId: number,
-  maxAgeMs: number,
+	subjectId: number,
+	maxAgeMs: number,
 ): Promise<RelatedCharacter[] | null> {
-  return readSubjectEntryWithin<RelatedCharacter[]>(subjectId, "characters", maxAgeMs);
+	return readSubjectEntryWithin<RelatedCharacter[]>(
+		subjectId,
+		"characters",
+		maxAgeMs,
+	);
 }
 
-export function writeCachedCharacters(subjectId: number, characters: RelatedCharacter[]) {
-  return writeSubjectEntry(subjectId, "characters", characters);
+export function writeCachedCharacters(
+	subjectId: number,
+	characters: RelatedCharacter[],
+) {
+	return writeSubjectEntry(subjectId, "characters", characters);
 }
 
-export function readCachedRelations(subjectId: number): Promise<SubjectRelation[] | null> {
-  return readSubjectEntry<SubjectRelation[]>(subjectId, "relations");
+export function readCachedRelations(
+	subjectId: number,
+): Promise<SubjectRelation[] | null> {
+	return readSubjectEntry<SubjectRelation[]>(subjectId, "relations");
 }
 
 export function readCachedRelationsWithin(
-  subjectId: number,
-  maxAgeMs: number,
+	subjectId: number,
+	maxAgeMs: number,
 ): Promise<SubjectRelation[] | null> {
-  return readSubjectEntryWithin<SubjectRelation[]>(subjectId, "relations", maxAgeMs);
+	return readSubjectEntryWithin<SubjectRelation[]>(
+		subjectId,
+		"relations",
+		maxAgeMs,
+	);
 }
 
-export function writeCachedRelations(subjectId: number, relations: SubjectRelation[]) {
-  return writeSubjectEntry(subjectId, "relations", relations);
+export function writeCachedRelations(
+	subjectId: number,
+	relations: SubjectRelation[],
+) {
+	return writeSubjectEntry(subjectId, "relations", relations);
 }
 
 export async function readCachedValue<T>(cacheKey: string): Promise<T | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
-      [cacheKey],
-    );
-    const payload = parseFreshPayload<T>(rows);
-    if (payload) await touchCacheEntry(db, cacheKey);
-    return payload;
-  }, null);
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
+			[cacheKey],
+		);
+		const payload = parseFreshPayload<T>(rows);
+		if (payload) await touchCacheEntry(db, cacheKey);
+		return payload;
+	}, null);
 }
 
 export async function readCachedValueEntry<T>(
-  cacheKey: string,
+	cacheKey: string,
 ): Promise<CachedValueEntry<T> | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
-      [cacheKey],
-    );
-    const row = rows[0];
-    if (!row || !isFresh(row)) return null;
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
+			[cacheKey],
+		);
+		const row = rows[0];
+		if (!row || !isFresh(row)) return null;
 
-    const payload = parsePayload<T>(rows);
-    if (payload === null) return null;
+		const payload = parsePayload<T>(rows);
+		if (payload === null) return null;
 
-    await touchCacheEntry(db, cacheKey);
-    return {
-      payload,
-      updatedAt: row.updated_at,
-      accessedAt: getAccessedAt(row),
-    };
-  }, null);
+		await touchCacheEntry(db, cacheKey);
+		return {
+			payload,
+			updatedAt: row.updated_at,
+			accessedAt: getAccessedAt(row),
+		};
+	}, null);
 }
 
 export async function readCachedValueWithin<T>(
-  cacheKey: string,
-  maxAgeMs: number,
+	cacheKey: string,
+	maxAgeMs: number,
 ): Promise<T | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<TimedPayloadRow[]>(
-      "SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
-      [cacheKey],
-    );
-    const payload = parseRecentlyUpdatedPayload<T>(rows, maxAgeMs);
-    if (payload) await touchCacheEntry(db, cacheKey);
-    return payload;
-  }, null);
+	return withDatabase(async (db) => {
+		const rows = await db.select<TimedPayloadRow[]>(
+			"SELECT payload_json, updated_at, accessed_at FROM cache_entries WHERE cache_key = $1 LIMIT 1",
+			[cacheKey],
+		);
+		const payload = parseRecentlyUpdatedPayload<T>(rows, maxAgeMs);
+		if (payload) await touchCacheEntry(db, cacheKey);
+		return payload;
+	}, null);
 }
 
 export async function readCachedValuesWithin<T>(
-  cacheKeys: string[],
-  maxAgeMs: number,
+	cacheKeys: string[],
+	maxAgeMs: number,
 ): Promise<Map<string, T>> {
-  const uniqueKeys = [...new Set(cacheKeys)].filter(Boolean);
-  if (uniqueKeys.length === 0) return new Map();
+	const uniqueKeys = [...new Set(cacheKeys)].filter(Boolean);
+	if (uniqueKeys.length === 0) return new Map();
 
-  return withDatabase(async (db) => {
-    const placeholders = uniqueKeys.map((_, index) => `$${index + 1}`).join(", ");
-    const rows = await db.select<Array<TimedPayloadRow & { cache_key: string }>>(
-      `SELECT cache_key, payload_json, updated_at, accessed_at
+	return withDatabase(async (db) => {
+		const placeholders = uniqueKeys
+			.map((_, index) => `$${index + 1}`)
+			.join(", ");
+		const rows = await db.select<
+			Array<TimedPayloadRow & { cache_key: string }>
+		>(
+			`SELECT cache_key, payload_json, updated_at, accessed_at
        FROM cache_entries
        WHERE cache_key IN (${placeholders})`,
-      uniqueKeys,
-    );
+			uniqueKeys,
+		);
 
-    const now = Date.now();
-    const result = new Map<string, T>();
-    const touchedKeys: string[] = [];
+		const now = Date.now();
+		const result = new Map<string, T>();
+		const touchedKeys: string[] = [];
 
-    for (const row of rows) {
-      if (!isUpdatedWithin(row, maxAgeMs, now)) continue;
-      const payload = parsePayload<T>([row]);
-      if (payload === null) continue;
-      result.set(row.cache_key, payload);
-      touchedKeys.push(row.cache_key);
-    }
+		for (const row of rows) {
+			if (!isUpdatedWithin(row, maxAgeMs, now)) continue;
+			const payload = parsePayload<T>([row]);
+			if (payload === null) continue;
+			result.set(row.cache_key, payload);
+			touchedKeys.push(row.cache_key);
+		}
 
-    if (touchedKeys.length > 0) {
-      const touchPlaceholders = touchedKeys.map((_, index) => `$${index + 2}`).join(", ");
-      await db.execute(
-        `UPDATE cache_entries SET accessed_at = $1 WHERE cache_key IN (${touchPlaceholders})`,
-        [now, ...touchedKeys],
-      );
-    }
+		if (touchedKeys.length > 0) {
+			const touchPlaceholders = touchedKeys
+				.map((_, index) => `$${index + 2}`)
+				.join(", ");
+			await db.execute(
+				`UPDATE cache_entries SET accessed_at = $1 WHERE cache_key IN (${touchPlaceholders})`,
+				[now, ...touchedKeys],
+			);
+		}
 
-    return result;
-  }, new Map());
+		return result;
+	}, new Map());
 }
 
-export async function readCachedValues<T>(cacheKeys: string[]): Promise<Map<string, T>> {
-  const uniqueKeys = [...new Set(cacheKeys)].filter(Boolean);
-  if (uniqueKeys.length === 0) return new Map();
+export async function readCachedValues<T>(
+	cacheKeys: string[],
+): Promise<Map<string, T>> {
+	const uniqueKeys = [...new Set(cacheKeys)].filter(Boolean);
+	if (uniqueKeys.length === 0) return new Map();
 
-  return withDatabase(async (db) => {
-    const placeholders = uniqueKeys.map((_, index) => `$${index + 1}`).join(", ");
-    const rows = await db.select<Array<TimedPayloadRow & { cache_key: string }>>(
-      `SELECT cache_key, payload_json, updated_at, accessed_at
+	return withDatabase(async (db) => {
+		const placeholders = uniqueKeys
+			.map((_, index) => `$${index + 1}`)
+			.join(", ");
+		const rows = await db.select<
+			Array<TimedPayloadRow & { cache_key: string }>
+		>(
+			`SELECT cache_key, payload_json, updated_at, accessed_at
        FROM cache_entries
        WHERE cache_key IN (${placeholders})`,
-      uniqueKeys,
-    );
+			uniqueKeys,
+		);
 
-    const now = Date.now();
-    const result = new Map<string, T>();
-    const touchedKeys: string[] = [];
+		const now = Date.now();
+		const result = new Map<string, T>();
+		const touchedKeys: string[] = [];
 
-    for (const row of rows) {
-      if (!isFresh(row, now)) continue;
-      const payload = parsePayload<T>([row]);
-      if (payload === null) continue;
-      result.set(row.cache_key, payload);
-      touchedKeys.push(row.cache_key);
-    }
+		for (const row of rows) {
+			if (!isFresh(row, now)) continue;
+			const payload = parsePayload<T>([row]);
+			if (payload === null) continue;
+			result.set(row.cache_key, payload);
+			touchedKeys.push(row.cache_key);
+		}
 
-    if (touchedKeys.length > 0) {
-      const touchPlaceholders = touchedKeys.map((_, index) => `$${index + 2}`).join(", ");
-      await db.execute(
-        `UPDATE cache_entries SET accessed_at = $1 WHERE cache_key IN (${touchPlaceholders})`,
-        [now, ...touchedKeys],
-      );
-    }
+		if (touchedKeys.length > 0) {
+			const touchPlaceholders = touchedKeys
+				.map((_, index) => `$${index + 2}`)
+				.join(", ");
+			await db.execute(
+				`UPDATE cache_entries SET accessed_at = $1 WHERE cache_key IN (${touchPlaceholders})`,
+				[now, ...touchedKeys],
+			);
+		}
 
-    return result;
-  }, new Map());
+		return result;
+	}, new Map());
 }
 
 export async function readCachedValueWithLegacy<T>(
-  cacheKey: string,
-  readLegacy: () => T | null,
+	cacheKey: string,
+	readLegacy: () => T | null,
 ): Promise<T | null> {
-  const cached = await readCachedValue<T>(cacheKey);
-  if (cached) return cached;
+	const cached = await readCachedValue<T>(cacheKey);
+	if (cached) return cached;
 
-  const legacy = readLegacy();
-  if (legacy) {
-    await writeCachedValue(cacheKey, legacy);
-  }
-  return legacy;
+	const legacy = readLegacy();
+	if (legacy) {
+		await writeCachedValue(cacheKey, legacy);
+	}
+	return legacy;
 }
 
 export function readLegacyHttpCache<T>(cacheKey: string): T | null {
-  try {
-    const raw = localStorage.getItem(`bangumini-http-${cacheKey}`);
-    if (!raw) return null;
-    const cached = JSON.parse(raw) as { data?: T };
-    return cached.data ?? null;
-  } catch {
-    return null;
-  }
+	try {
+		const raw = localStorage.getItem(`bangumini-http-${cacheKey}`);
+		if (!raw) return null;
+		const cached = JSON.parse(raw) as { data?: T };
+		return cached.data ?? null;
+	} catch {
+		return null;
+	}
 }
 
 export async function writeCachedValue(cacheKey: string, payload: unknown) {
-  await withDatabase(async (db) => {
-    await db.execute(
-      `INSERT INTO cache_entries (cache_key, payload_json, updated_at, accessed_at)
+	await withDatabase(async (db) => {
+		await db.execute(
+			`INSERT INTO cache_entries (cache_key, payload_json, updated_at, accessed_at)
        VALUES ($1, $2, $3, $3)
        ON CONFLICT(cache_key) DO UPDATE SET
          payload_json = excluded.payload_json,
          updated_at = excluded.updated_at,
          accessed_at = excluded.updated_at`,
-      [cacheKey, JSON.stringify(payload), Date.now()],
-    );
-  }, undefined);
+			[cacheKey, JSON.stringify(payload), Date.now()],
+		);
+	}, undefined);
 }
 
 export async function deleteCachedValue(cacheKey: string) {
-  await withDatabase(async (db) => {
-    await db.execute("DELETE FROM cache_entries WHERE cache_key = $1", [cacheKey]);
-  }, undefined);
+	await withDatabase(async (db) => {
+		await db.execute("DELETE FROM cache_entries WHERE cache_key = $1", [
+			cacheKey,
+		]);
+	}, undefined);
 }
 
 export async function deleteCachedValuesByPrefix(cacheKeyPrefix: string) {
-  await withDatabase(async (db) => {
-    await db.execute("DELETE FROM cache_entries WHERE cache_key LIKE $1", [`${cacheKeyPrefix}%`]);
-  }, undefined);
+	await withDatabase(async (db) => {
+		await db.execute("DELETE FROM cache_entries WHERE cache_key LIKE $1", [
+			`${cacheKeyPrefix}%`,
+		]);
+	}, undefined);
 }
 
-export async function deleteCachedValuesByPrefixExcept(cacheKeyPrefix: string, keepCacheKey: string) {
-  await withDatabase(async (db) => {
-    await db.execute(
-      "DELETE FROM cache_entries WHERE cache_key LIKE $1 AND cache_key != $2",
-      [`${cacheKeyPrefix}%`, keepCacheKey],
-    );
-  }, undefined);
+export async function deleteCachedValuesByPrefixExcept(
+	cacheKeyPrefix: string,
+	keepCacheKey: string,
+) {
+	await withDatabase(async (db) => {
+		await db.execute(
+			"DELETE FROM cache_entries WHERE cache_key LIKE $1 AND cache_key != $2",
+			[`${cacheKeyPrefix}%`, keepCacheKey],
+		);
+	}, undefined);
 }
 
-function collectionTaskFromRow<T>(row: CollectionTaskQueueRow): PersistentCollectionTask<T> | null {
-  try {
-    return {
-      id: row.id,
-      kind: row.kind,
-      payload: JSON.parse(row.payload_json) as T,
-      status: row.status,
-      attemptCount: row.attempt_count,
-      lastError: row.last_error,
-      runAfter: row.run_after,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  } catch {
-    return null;
-  }
+function collectionTaskFromRow<T>(
+	row: CollectionTaskQueueRow,
+): PersistentCollectionTask<T> | null {
+	try {
+		return {
+			id: row.id,
+			kind: row.kind,
+			payload: JSON.parse(row.payload_json) as T,
+			status: row.status,
+			attemptCount: row.attempt_count,
+			lastError: row.last_error,
+			runAfter: row.run_after,
+			createdAt: row.created_at,
+			updatedAt: row.updated_at,
+		};
+	} catch {
+		return null;
+	}
 }
 
 export async function upsertPersistentCollectionTask(
-  task: Pick<PersistentCollectionTask, "id" | "kind" | "payload">,
+	task: Pick<PersistentCollectionTask, "id" | "kind" | "payload">,
 ): Promise<PersistentCollectionTask | null> {
-  return withDatabase(async (db) => {
-    const now = Date.now();
-    await db.execute(
-      `INSERT INTO collection_task_queue
+	return withDatabase(async (db) => {
+		const now = Date.now();
+		await db.execute(
+			`INSERT INTO collection_task_queue
          (id, kind, payload_json, status, attempt_count, last_error, run_after, created_at, updated_at)
        VALUES ($1, $2, $3, 'pending', 0, NULL, $4, $4, $4)
        ON CONFLICT(id) DO UPDATE SET
@@ -872,166 +1033,187 @@ export async function upsertPersistentCollectionTask(
          last_error = NULL,
          run_after = excluded.run_after,
          updated_at = excluded.updated_at`,
-      [task.id, task.kind, JSON.stringify(task.payload), now],
-    );
+			[task.id, task.kind, JSON.stringify(task.payload), now],
+		);
 
-    const rows = await db.select<CollectionTaskQueueRow[]>(
-      "SELECT * FROM collection_task_queue WHERE id = $1 LIMIT 1",
-      [task.id],
-    );
-    return rows[0] ? collectionTaskFromRow(rows[0]) : null;
-  }, null);
+		const rows = await db.select<CollectionTaskQueueRow[]>(
+			"SELECT * FROM collection_task_queue WHERE id = $1 LIMIT 1",
+			[task.id],
+		);
+		return rows[0] ? collectionTaskFromRow(rows[0]) : null;
+	}, null);
 }
 
-export async function readPersistentCollectionTasks(): Promise<PersistentCollectionTask[]> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<CollectionTaskQueueRow[]>(
-      `SELECT * FROM collection_task_queue
+export async function readPersistentCollectionTasks(): Promise<
+	PersistentCollectionTask[]
+> {
+	return withDatabase(async (db) => {
+		const rows = await db.select<CollectionTaskQueueRow[]>(
+			`SELECT * FROM collection_task_queue
        WHERE status != 'done'
        ORDER BY created_at ASC, updated_at ASC`,
-    );
-    return rows
-      .map((row) => collectionTaskFromRow(row))
-      .filter((task): task is PersistentCollectionTask => task !== null);
-  }, []);
+		);
+		return rows
+			.map((row) => collectionTaskFromRow(row))
+			.filter((task): task is PersistentCollectionTask => task !== null);
+	}, []);
 }
 
-export async function readDuePersistentCollectionTask(now = Date.now()): Promise<PersistentCollectionTask | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<CollectionTaskQueueRow[]>(
-      `SELECT * FROM collection_task_queue
+export async function readDuePersistentCollectionTask(
+	now = Date.now(),
+): Promise<PersistentCollectionTask | null> {
+	return withDatabase(async (db) => {
+		const rows = await db.select<CollectionTaskQueueRow[]>(
+			`SELECT * FROM collection_task_queue
        WHERE status IN ('pending', 'failed') AND run_after <= $1
        ORDER BY created_at ASC, updated_at ASC
        LIMIT 1`,
-      [now],
-    );
-    return rows[0] ? collectionTaskFromRow(rows[0]) : null;
-  }, null);
+			[now],
+		);
+		return rows[0] ? collectionTaskFromRow(rows[0]) : null;
+	}, null);
 }
 
-export async function readNextPersistentCollectionTaskRunAt(): Promise<number | null> {
-  return withDatabase(async (db) => {
-    const rows = await db.select<Array<{ run_after: number }>>(
-      `SELECT run_after FROM collection_task_queue
+export async function readNextPersistentCollectionTaskRunAt(): Promise<
+	number | null
+> {
+	return withDatabase(async (db) => {
+		const rows = await db.select<Array<{ run_after: number }>>(
+			`SELECT run_after FROM collection_task_queue
        WHERE status IN ('pending', 'failed')
        ORDER BY run_after ASC
        LIMIT 1`,
-    );
-    return rows[0]?.run_after ?? null;
-  }, null);
+		);
+		return rows[0]?.run_after ?? null;
+	}, null);
 }
 
 export async function markPersistentCollectionTaskRunning(id: string) {
-  await withDatabase(async (db) => {
-    await db.execute(
-      "UPDATE collection_task_queue SET status = 'running', updated_at = $1 WHERE id = $2",
-      [Date.now(), id],
-    );
-  }, undefined);
+	await withDatabase(async (db) => {
+		await db.execute(
+			"UPDATE collection_task_queue SET status = 'running', updated_at = $1 WHERE id = $2",
+			[Date.now(), id],
+		);
+	}, undefined);
 }
 
-export async function markPersistentCollectionTaskFailed(id: string, error: string, runAfter: number) {
-  await withDatabase(async (db) => {
-    await db.execute(
-      `UPDATE collection_task_queue SET
+export async function markPersistentCollectionTaskFailed(
+	id: string,
+	error: string,
+	runAfter: number,
+) {
+	await withDatabase(async (db) => {
+		await db.execute(
+			`UPDATE collection_task_queue SET
          status = 'failed',
          attempt_count = attempt_count + 1,
          last_error = $1,
          run_after = $2,
          updated_at = $3
        WHERE id = $4`,
-      [error, runAfter, Date.now(), id],
-    );
-  }, undefined);
+			[error, runAfter, Date.now(), id],
+		);
+	}, undefined);
 }
 
 export async function completePersistentCollectionTask(id: string) {
-  await withDatabase(async (db) => {
-    await db.execute("DELETE FROM collection_task_queue WHERE id = $1", [id]);
-  }, undefined);
+	await withDatabase(async (db) => {
+		await db.execute("DELETE FROM collection_task_queue WHERE id = $1", [id]);
+	}, undefined);
 }
 
 export async function retryPersistentCollectionTask(id: string) {
-  await withDatabase(async (db) => {
-    await db.execute(
-      `UPDATE collection_task_queue SET
+	await withDatabase(async (db) => {
+		await db.execute(
+			`UPDATE collection_task_queue SET
          status = 'pending',
          last_error = NULL,
          run_after = $1,
          updated_at = $1
        WHERE id = $2`,
-      [Date.now(), id],
-    );
-  }, undefined);
+			[Date.now(), id],
+		);
+	}, undefined);
 }
 
 export async function deletePersistentCollectionTask(id: string) {
-  await withDatabase(async (db) => {
-    await db.execute("DELETE FROM collection_task_queue WHERE id = $1", [id]);
-  }, undefined);
+	await withDatabase(async (db) => {
+		await db.execute("DELETE FROM collection_task_queue WHERE id = $1", [id]);
+	}, undefined);
 }
 
 export async function recoverRunningPersistentCollectionTasks() {
-  await withDatabase(async (db) => {
-    const now = Date.now();
-    await db.execute(
-      `UPDATE collection_task_queue SET
+	await withDatabase(async (db) => {
+		const now = Date.now();
+		await db.execute(
+			`UPDATE collection_task_queue SET
          status = 'pending',
          run_after = $1,
          updated_at = $1
        WHERE status = 'running'`,
-      [now],
-    );
-  }, undefined);
+			[now],
+		);
+	}, undefined);
 }
 
-export async function readCachedImage(remoteUrl: string): Promise<CachedImageRecord | null> {
-  if (!remoteUrl) return null;
-  return withDatabase(async (db) => {
-    const rows = await db.select<ImageCacheRow[]>(
-      "SELECT local_path, updated_at, accessed_at FROM image_cache WHERE remote_url = $1 LIMIT 1",
-      [remoteUrl],
-    );
-    const row = rows[0];
-    if (!row) return null;
-    if (!isFresh(row)) return null;
-    await touchImage(db, remoteUrl);
-    return {
-      remoteUrl,
-      localPath: row.local_path,
-      updatedAt: row.updated_at,
-    };
-  }, null);
+export async function readCachedImage(
+	remoteUrl: string,
+): Promise<CachedImageRecord | null> {
+	if (!remoteUrl) return null;
+	return withDatabase(async (db) => {
+		const rows = await db.select<ImageCacheRow[]>(
+			"SELECT local_path, updated_at, accessed_at FROM image_cache WHERE remote_url = $1 LIMIT 1",
+			[remoteUrl],
+		);
+		const row = rows[0];
+		if (!row) return null;
+		if (!isFresh(row)) return null;
+		await touchImage(db, remoteUrl);
+		return {
+			remoteUrl,
+			localPath: row.local_path,
+			updatedAt: row.updated_at,
+		};
+	}, null);
 }
 
 export async function writeCachedImage(record: CachedImageRecord) {
-  await withDatabase(async (db) => {
-    await db.execute(
-      `INSERT INTO image_cache (remote_url, local_path, updated_at, accessed_at)
+	await withDatabase(async (db) => {
+		await db.execute(
+			`INSERT INTO image_cache (remote_url, local_path, updated_at, accessed_at)
        VALUES ($1, $2, $3, $3)
        ON CONFLICT(remote_url) DO UPDATE SET
          local_path = excluded.local_path,
          updated_at = excluded.updated_at,
          accessed_at = excluded.updated_at`,
-      [record.remoteUrl, record.localPath, record.updatedAt],
-    );
-  }, undefined);
+			[record.remoteUrl, record.localPath, record.updatedAt],
+		);
+	}, undefined);
 }
 
 export async function cleanupExpiredCache(): Promise<string[]> {
-  return withDatabase(async (db) => {
-    const cutoff = Date.now() - CACHE_TTL_MS;
-    const expiredImages = await db.select<Array<{ local_path: string }>>(
-      "SELECT local_path FROM image_cache WHERE accessed_at < $1",
-      [cutoff],
-    );
+	return withDatabase(async (db) => {
+		const cutoff = Date.now() - CACHE_TTL_MS;
+		const expiredImages = await db.select<Array<{ local_path: string }>>(
+			"SELECT local_path FROM image_cache WHERE accessed_at < $1",
+			[cutoff],
+		);
 
-    await db.execute("DELETE FROM subjects WHERE accessed_at < $1", [cutoff]);
-    await db.execute("DELETE FROM subject_collections WHERE accessed_at < $1", [cutoff]);
-    await db.execute("DELETE FROM subject_cache_entries WHERE accessed_at < $1", [cutoff]);
-    await db.execute("DELETE FROM cache_entries WHERE accessed_at < $1", [cutoff]);
-    await db.execute("DELETE FROM image_cache WHERE accessed_at < $1", [cutoff]);
+		await db.execute("DELETE FROM subjects WHERE accessed_at < $1", [cutoff]);
+		await db.execute("DELETE FROM subject_collections WHERE accessed_at < $1", [
+			cutoff,
+		]);
+		await db.execute(
+			"DELETE FROM subject_cache_entries WHERE accessed_at < $1",
+			[cutoff],
+		);
+		await db.execute("DELETE FROM cache_entries WHERE accessed_at < $1", [
+			cutoff,
+		]);
+		await db.execute("DELETE FROM image_cache WHERE accessed_at < $1", [
+			cutoff,
+		]);
 
-    return expiredImages.map((row) => row.local_path);
-  }, []);
+		return expiredImages.map((row) => row.local_path);
+	}, []);
 }

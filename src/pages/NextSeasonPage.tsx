@@ -20,8 +20,10 @@ import {
 	refreshQueryDataIfChanged,
 } from "../api/stale-cache-refresh";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
-import { SubjectRow, Meta } from "../components/SubjectRow";
+import { SubjectRow, Meta, Tag } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useCollectionStatusMap } from "../hooks/useCollectionStatusMap";
+import { CollectionTypeLabel } from "@shared/api/types";
 
 const ANILIST_WEEKDAY_CN: Record<number, string> = {
 	0: "星期日",
@@ -363,6 +365,7 @@ export default function NextSeasonPage() {
 	const navigate = useNavigate();
 	const location = useLocation();
 	const queryClient = useQueryClient();
+	const colTypeMap = useCollectionStatusMap();
 	const [searchParams] = useSearchParams();
 	const filterText = searchParams.get("filter") ?? "";
 	const filterWeekday = searchParams.get("weekday") ?? "";
@@ -793,6 +796,16 @@ export default function NextSeasonPage() {
 													}}
 													accessories={
 														<>
+															{item.bangumiId &&
+																colTypeMap.has(item.bangumiId) && (
+																	<Tag>
+																		{
+																			CollectionTypeLabel[
+																				colTypeMap.get(item.bangumiId)!
+																			]
+																		}
+																	</Tag>
+																)}
 															{item.episodes && <Meta>{item.episodes}话</Meta>}
 															<Meta>
 																{item.format === "MOVIE"
@@ -867,6 +880,15 @@ export default function NextSeasonPage() {
 											}}
 											accessories={
 												<>
+													{item.bangumiId && colTypeMap.has(item.bangumiId) && (
+														<Tag>
+															{
+																CollectionTypeLabel[
+																	colTypeMap.get(item.bangumiId)!
+																]
+															}
+														</Tag>
+													)}
 													{item.episodes && <Meta>{item.episodes}话</Meta>}
 													<Meta>
 														{item.format === "MOVIE"

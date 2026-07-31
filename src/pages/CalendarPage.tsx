@@ -15,9 +15,11 @@ import { WEEKDAY_CN, getTodayBangumiWeekday } from "@shared/sort-collections";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import type { SubjectSmall } from "@shared/api/types";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
-import { SubjectRow, Rating, Meta } from "../components/SubjectRow";
+import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
+import { useCollectionStatusMap } from "../hooks/useCollectionStatusMap";
+import { CollectionTypeLabel } from "@shared/api/types";
 
 const CALENDAR_QUERY_KEY = ["calendar"] as const;
 
@@ -39,6 +41,7 @@ export default function CalendarPage() {
 	const navigate = useNavigate();
 	const location = useLocation();
 	const queryClient = useQueryClient();
+	const colTypeMap = useCollectionStatusMap();
 	const [searchParams] = useSearchParams();
 	const today = getTodayBangumiWeekday();
 
@@ -334,6 +337,11 @@ export default function CalendarPage() {
 														}
 														accessories={
 															<>
+																{colTypeMap.has(s.id) && (
+																	<Tag>
+																		{CollectionTypeLabel[colTypeMap.get(s.id)!]}
+																	</Tag>
+																)}
 																{s.rating?.score ? (
 																	<Rating score={s.rating.score} />
 																) : null}
@@ -406,6 +414,11 @@ export default function CalendarPage() {
 										}
 										accessories={
 											<>
+												{colTypeMap.has(s.id) && (
+													<Tag>
+														{CollectionTypeLabel[colTypeMap.get(s.id)!]}
+													</Tag>
+												)}
 												{s.rating?.score ? (
 													<Rating score={s.rating.score} />
 												) : null}
