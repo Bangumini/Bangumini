@@ -531,7 +531,20 @@ export async function kickCollectionTaskWorker() {
 		while (true) {
 			const dueTask = await readDuePersistentCollectionTask();
 			const task = dueTask ? asCollectionTask(dueTask) : null;
-			if (!task) break;
+			if (!task) {
+				if (dueTask) {
+					// 任务无法解析（旧版本遗留的未知 kind 或 payload 损坏）：
+					// 新代码永远无法执行它，清理掉以避免阻塞队列中的后续任务
+					const removed = await completePersistentCollectionTask(dueTask.id);
+					if (removed) {
+						emitCollectionTaskQueueChanged();
+						continue;
+					}
+					// 清理失败（数据库异常）：退出本次运行，等待下次调度重试，避免死循环
+					break;
+				}
+				break;
+			}
 
 			await markPersistentCollectionTaskRunning(task.id);
 			emitCollectionTaskQueueChanged();

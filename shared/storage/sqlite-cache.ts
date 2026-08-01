@@ -1116,10 +1116,16 @@ export async function markPersistentCollectionTaskFailed(
 	}, undefined);
 }
 
-export async function completePersistentCollectionTask(id: string) {
-	await withDatabase(async (db) => {
-		await db.execute("DELETE FROM collection_task_queue WHERE id = $1", [id]);
-	}, undefined);
+export async function completePersistentCollectionTask(
+	id: string,
+): Promise<boolean> {
+	return withDatabase(async (db) => {
+		const result = await db.execute(
+			"DELETE FROM collection_task_queue WHERE id = $1",
+			[id],
+		);
+		return result.rowsAffected > 0;
+	}, false);
 }
 
 export async function retryPersistentCollectionTask(id: string) {
