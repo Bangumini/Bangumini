@@ -35,10 +35,13 @@ const ANILIST_WEEKDAY_CN: Record<number, string> = {
 	6: "星期六",
 };
 
+/** 分页标识：数字=星期几，tba=未定，nontv=非TV */
+type DayPage = number | "tba" | "nontv";
+
 type NextSeasonLocationState = {
 	fromSubject?: boolean;
 	subjectId?: number;
-	currentDay?: number | "tba";
+	currentDay?: DayPage;
 	focusedIndex?: number;
 };
 
@@ -388,7 +391,7 @@ export default function NextSeasonPage() {
 		};
 	}, [location.state]);
 
-	const [currentDay, setCurrentDay] = useState<number | "tba">(
+	const [currentDay, setCurrentDay] = useState<DayPage>(
 		initialState.currentDay,
 	);
 	const [focusedIndex, setFocusedIndex] = useState(initialState.focusedIndex);
@@ -498,15 +501,22 @@ export default function NextSeasonPage() {
 		return map;
 	}, [entries]);
 
-	const availableDays = useMemo(() => {
-		const set = new Set<number>();
-		for (const k of groups.keys()) {
-			if (k !== "tba") set.add(k as number);
-		}
-		return set;
-	}, [groups]);
+	// 非 TV 条目（跨 weekday 聚合视图）
+	const nonTvItems = useMemo(() => {
+		return entries.filter((e) => e.format !== "TV");
+	}, [entries]);
 
-	const hasTba = groups.has("tba");
+	// 有序分页列表：周一..周日 → 未定 → 非TV
+	const availablePages = useMemo(() => {
+		const pages: DayPage[] = [];
+		for (let d = 1; d <= 6; d++) {
+			if (groups.has(d)) pages.push(d);
+		}
+		if (groups.has(0)) pages.push(0);
+		if (groups.has("tba")) pages.push("tba");
+		if (nonTvItems.length > 0) pages.push("nontv");
+		return pages;
+	}, [groups, nonTvItems]);
 
 	// Clear navigation state after returning from detail
 	useEffect(() => {
@@ -577,7 +587,9 @@ export default function NextSeasonPage() {
 	const allFilteredItems = filteredGroups.flatMap((g) => g.items);
 	const currentItems = isFiltering
 		? allFilteredItems
-		: (groups.get(currentDay) ?? []);
+		: currentDay === "nontv"
+			? nonTvItems
+			: (groups.get(currentDay) ?? []);
 
 	// Reset focus when day or filter changes (but not when returning from detail)
 	useEffect(() => {
@@ -638,18 +650,11 @@ export default function NextSeasonPage() {
 				when: () => !isFiltering,
 				handler: () => {
 					setCurrentDay((d) => {
-						if (d === "tba") {
-							for (let i = 6; i >= 0; i--) {
-								if (availableDays.has(i)) return i;
-							}
-							return "tba";
-						}
-						for (let offset = 1; offset <= 7; offset++) {
-							const candidate = (d - offset + 7) % 7;
-							if (availableDays.has(candidate)) return candidate;
-						}
-						if (hasTba) return "tba";
-						return d;
+						const idx = availablePages.indexOf(d);
+						if (idx < 0) return d;
+						return availablePages[
+							(idx - 1 + availablePages.length) % availablePages.length
+						];
 					});
 				},
 			},
@@ -658,13 +663,9 @@ export default function NextSeasonPage() {
 				when: () => !isFiltering,
 				handler: () => {
 					setCurrentDay((d) => {
-						if (d === "tba") return "tba";
-						for (let offset = 1; offset <= 7; offset++) {
-							const candidate = (d + offset) % 7;
-							if (availableDays.has(candidate)) return candidate;
-						}
-						if (hasTba) return "tba";
-						return d;
+						const idx = availablePages.indexOf(d);
+						if (idx < 0) return d;
+						return availablePages[(idx + 1) % availablePages.length];
 					});
 				},
 			},
@@ -828,9 +829,11 @@ export default function NextSeasonPage() {
 					<>
 						<div className="flex items-center justify-between mb-2 px-1">
 							<h2 className="text-[15px] font-semibold text-fg">
-								{currentDay === "tba"
-									? "未定 (TBA)"
-									: ANILIST_WEEKDAY_CN[currentDay]}
+								{currentDay === "nontv"
+									? "非TV"
+									: currentDay === "tba"
+										? "未定 (TBA)"
+										: ANILIST_WEEKDAY_CN[currentDay]}
 							</h2>
 							<span className="text-[12px] text-fg-tertiary">
 								{seasonLabel}新番 · 共 {entries.length} 部
