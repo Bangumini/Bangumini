@@ -95,17 +95,56 @@ function XIcon() {
 	);
 }
 
+function CopyIcon() {
+	return (
+		<svg
+			width="16"
+			height="16"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.6"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+		>
+			<rect x="9" y="9" width="12" height="12" rx="2" />
+			<path d="M5 15V5a2 2 0 0 1 2-2h10" />
+		</svg>
+	);
+}
+
+function CheckIcon() {
+	return (
+		<svg
+			width="16"
+			height="16"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.6"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+		>
+			<path d="M20 6 9 17l-5-5" />
+		</svg>
+	);
+}
+
 const TASK_LIST_MAX_HEIGHT = 320;
 
 export default function SyncQueueDock() {
 	const [tasks, setTasks] = useState<CollectionTask[]>([]);
 	const [expanded, setExpanded] = useState(false);
+	const [copiedTaskId, setCopiedTaskId] = useState<string | null>(null);
 	const mountedRef = useRef(true);
+	const copyTimerRef = useRef<number | null>(null);
 
 	useEffect(() => {
 		mountedRef.current = true;
 		return () => {
 			mountedRef.current = false;
+			if (copyTimerRef.current !== null)
+				window.clearTimeout(copyTimerRef.current);
 		};
 	}, []);
 
@@ -117,6 +156,26 @@ export default function SyncQueueDock() {
 				if (next.length === 0) setExpanded(false);
 			})
 			.catch(() => {});
+	}, []);
+
+	// 复制错误信息到剪贴板：成功后按钮图标短暂切换为 ✓，失败则直接复原
+	const handleCopyError = useCallback((task: CollectionTask) => {
+		if (!task.lastError) return;
+		if (copyTimerRef.current !== null)
+			window.clearTimeout(copyTimerRef.current);
+		void navigator.clipboard.writeText(task.lastError).then(
+			() => {
+				if (!mountedRef.current) return;
+				setCopiedTaskId(task.id);
+				copyTimerRef.current = window.setTimeout(() => {
+					if (mountedRef.current) setCopiedTaskId(null);
+				}, 1200);
+			},
+			() => {
+				// 复制失败：不打扰用户，按钮直接复原
+				if (mountedRef.current) setCopiedTaskId(null);
+			},
+		);
 	}, []);
 
 	useEffect(() => {
@@ -230,7 +289,7 @@ export default function SyncQueueDock() {
 												{getCollectionTaskSummary(task)}
 											</p>
 											<p
-												className={`text-[11px] ${task.status === "failed" ? "text-danger" : "text-fg-tertiary"}`}
+												className={`text-[11px] line-clamp-2 break-words ${task.status === "failed" ? "text-danger" : "text-fg-tertiary"}`}
 											>
 												{task.status === "failed" && task.lastError
 													? `同步失败: ${task.lastError}`
@@ -247,6 +306,25 @@ export default function SyncQueueDock() {
 												title="重试"
 											>
 												<SyncIcon />
+											</button>
+										)}
+										{task.status === "failed" && (
+											<button
+												onClick={() => void handleCopyError(task)}
+												className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-full border transition-colors ${
+													copiedTaskId === task.id
+														? "border-line-strong text-accent"
+														: "border-line hover:bg-hover hover:text-fg text-fg-tertiary"
+												}`}
+												title={
+													copiedTaskId === task.id ? "已复制" : "复制错误信息"
+												}
+											>
+												{copiedTaskId === task.id ? (
+													<CheckIcon />
+												) : (
+													<CopyIcon />
+												)}
 											</button>
 										)}
 										{task.status !== "running" && (
