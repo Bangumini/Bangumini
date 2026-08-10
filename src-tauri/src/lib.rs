@@ -698,17 +698,10 @@ pub fn run() {
                 }
             });
 
-            // Background update check on startup
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                use tauri::Emitter;
-                use tauri_plugin_updater::UpdaterExt;
-                if let Ok(updater) = handle.updater() {
-                    if let Ok(Some(update)) = updater.check().await {
-                        let _ = handle.emit("update-available", update.version);
-                    }
-                }
-            });
+            // 自动检查更新由前端统一管理（src/hooks/useAutoUpdateCheck.ts）：
+            // 启动时 + 窗口显示时检查，受节流/开关/跳过版本控制，只提醒不下载。
+            // 原先是后端启动时 check() 后 emit "update-available"，但前端从未监听，
+            // 结果被静默丢弃，且不受开关/节流控制，故移除。
 
             Ok(())
         })

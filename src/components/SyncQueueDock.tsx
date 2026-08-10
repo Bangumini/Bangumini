@@ -220,7 +220,8 @@ export default function SyncQueueDock() {
 				/>
 			)}
 
-			<div className="fixed bottom-4 right-4 z-50">
+			{/* 定位由 Layout 右下角容器提供（fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2） */}
+			<div>
 				{!expanded && (
 					<button
 						onClick={() => setExpanded(true)}

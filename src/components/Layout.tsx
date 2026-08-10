@@ -21,6 +21,8 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import CustomSelect from "./CustomSelect";
 import FetchIndicator from "./FetchIndicator";
 import SyncQueueDock from "./SyncQueueDock";
+import UpdatePrompt from "./UpdatePrompt";
+import { useAutoUpdateCheck } from "../hooks/useAutoUpdateCheck";
 
 const TABS = [
 	{ path: "/collections", label: "收藏", key: "1", Icon: BookmarkIcon },
@@ -106,6 +108,8 @@ export default function Layout() {
 	const isCalendar = location.pathname === "/calendar";
 	const isNextSeason = location.pathname === "/next-season";
 	const isFetching = useIsFetching() > 0;
+	// 自动检查更新（启动时 + 窗口显示时），只提醒不下载
+	const { latestVersion, dismissUpdate, skipVersion } = useAutoUpdateCheck();
 	const currentTab = TABS.findIndex((t) => t.path === location.pathname);
 	const currentTabRef = useRef(currentTab);
 
@@ -624,7 +628,21 @@ export default function Layout() {
 				</div>
 			)}
 
-			<SyncQueueDock />
+			{/* 右下角堆叠容器：更新提示在同步队列上方，两者同时出现时互不遮挡 */}
+			<div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+				{latestVersion && (
+					<UpdatePrompt
+						latestVersion={latestVersion}
+						onUpdate={() => {
+							dismissUpdate();
+							navigate("/settings?check=1");
+						}}
+						onDismiss={dismissUpdate}
+						onSkip={skipVersion}
+					/>
+				)}
+				<SyncQueueDock />
+			</div>
 		</div>
 	);
 }
