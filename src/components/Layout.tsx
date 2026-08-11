@@ -22,6 +22,7 @@ import CustomSelect from "./CustomSelect";
 import FetchIndicator from "./FetchIndicator";
 import SyncQueueDock from "./SyncQueueDock";
 import UpdatePrompt from "./UpdatePrompt";
+import CornerStack from "./CornerStack";
 import { useAutoUpdateCheck } from "../hooks/useAutoUpdateCheck";
 
 const TABS = [
@@ -628,8 +629,7 @@ export default function Layout() {
 				</div>
 			)}
 
-			{/* 右下角堆叠容器：更新提示在同步队列上方，两者同时出现时互不遮挡 */}
-			<div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+			<CornerStack>
 				{latestVersion && (
 					<UpdatePrompt
 						latestVersion={latestVersion}
@@ -642,7 +642,7 @@ export default function Layout() {
 					/>
 				)}
 				<SyncQueueDock />
-			</div>
+			</CornerStack>
 		</div>
 	);
 }
