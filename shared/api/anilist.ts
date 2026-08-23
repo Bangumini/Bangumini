@@ -6,47 +6,123 @@ export function setFetchFunction(fn: typeof fetch) {
   fetchFn = fn;
 }
 
-function buildQuery(title: string): string {
-  const escaped = title.replace(/"/g, '\\"');
-  return `{ Page(page: 1, perPage: 1) { media(search: "${escaped}", type: ANIME) { id nextAiringEpisode { airingAt episode } } } }`;
-}
+const AIRING_QUERY = `query ($search: String!) {
+  Page(page: 1, perPage: 1) {
+    media(search: $search, type: ANIME) {
+      id
+      nextAiringEpisode { airingAt episode }
+    }
+  }
+}`;
+const AIRING_REQUEST_TIMEOUT = 8000;
+const AIRING_MAX_ATTEMPTS = 3;
 
 interface AniListResponse {
-  data: {
-    Page: {
-      media: {
+  data?: {
+    Page?: {
+      media?: {
         id: number;
         nextAiringEpisode: { airingAt: number; episode: number } | null;
       }[];
     };
   };
+  errors?: { message?: string }[];
 }
 
-export async function getAiringAt(title: string): Promise<{ airingAt: number; episode: number } | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-
-  try {
-    const res = await fetchFn(BASE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: buildQuery(title) }),
-      signal: controller.signal,
-    });
-
-    const json = (await res.json()) as AniListResponse;
-    const media = json.data?.Page?.media?.[0];
-    if (!media?.nextAiringEpisode) return null;
-
-    return {
-      airingAt: media.nextAiringEpisode.airingAt,
-      episode: media.nextAiringEpisode.episode,
+export type AiringLookupResult =
+  | {
+      status: "scheduled";
+      value: { airingAt: number; episode: number };
+    }
+  | { status: "no_schedule" }
+  | { status: "not_found" }
+  | {
+      status: "network_error";
+      retryable: boolean;
+      message: string;
     };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getRetryDelay(response: Response, attempt: number) {
+  const retryAfter = Number(response.headers.get("Retry-After"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return retryAfter * 1000;
   }
+  return 750 * 2 ** attempt;
+}
+
+export async function getAiringAt(title: string): Promise<AiringLookupResult> {
+  let lastMessage = "AniList request failed";
+
+  for (let attempt = 0; attempt < AIRING_MAX_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      AIRING_REQUEST_TIMEOUT,
+    );
+
+    try {
+      const res = await fetchFn(BASE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: AIRING_QUERY,
+          variables: { search: title },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        lastMessage = `AniList HTTP ${res.status}`;
+        const retryable = res.status === 429 || res.status >= 500;
+        if (retryable && attempt + 1 < AIRING_MAX_ATTEMPTS) {
+          await delay(getRetryDelay(res, attempt));
+          continue;
+        }
+        return { status: "network_error", retryable, message: lastMessage };
+      }
+
+      const json = (await res.json()) as AniListResponse;
+      if (json.errors?.length) {
+        lastMessage = json.errors[0]?.message || "AniList GraphQL error";
+        if (attempt + 1 < AIRING_MAX_ATTEMPTS) {
+          await delay(750 * 2 ** attempt);
+          continue;
+        }
+        return {
+          status: "network_error",
+          retryable: true,
+          message: lastMessage,
+        };
+      }
+
+      const media = json.data?.Page?.media?.[0];
+      if (!media) return { status: "not_found" };
+      if (!media.nextAiringEpisode) return { status: "no_schedule" };
+
+      return {
+        status: "scheduled",
+        value: {
+          airingAt: media.nextAiringEpisode.airingAt,
+          episode: media.nextAiringEpisode.episode,
+        },
+      };
+    } catch (error) {
+      lastMessage =
+        error instanceof Error ? error.message : "AniList network error";
+      if (attempt + 1 < AIRING_MAX_ATTEMPTS) {
+        await delay(750 * 2 ** attempt);
+        continue;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return { status: "network_error", retryable: true, message: lastMessage };
 }
 
 // ── Next Season ──────────────────────────────────────────────
@@ -70,7 +146,11 @@ interface NextSeasonResponse {
         id: number;
         title: { native: string; romaji: string };
         coverImage: { large: string };
-        startDate: { year: number | null; month: number | null; day: number | null };
+        startDate: {
+          year: number | null;
+          month: number | null;
+          day: number | null;
+        };
         nextAiringEpisode: { airingAt: number; episode: number } | null;
         episodes: number | null;
         format: string;
@@ -79,14 +159,21 @@ interface NextSeasonResponse {
   };
 }
 
-export function getNextSeasonInfo(): { season: string; seasonYear: number; label: string } {
+export function getNextSeasonInfo(): {
+  season: string;
+  seasonYear: number;
+  label: string;
+} {
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth() + 1;
 
-  if (month <= 3) return { season: "SPRING", seasonYear: year, label: `${year} 春季` };
-  if (month <= 6) return { season: "SUMMER", seasonYear: year, label: `${year} 夏季` };
-  if (month <= 9) return { season: "FALL", seasonYear: year, label: `${year} 秋季` };
+  if (month <= 3)
+    return { season: "SPRING", seasonYear: year, label: `${year} 春季` };
+  if (month <= 6)
+    return { season: "SUMMER", seasonYear: year, label: `${year} 夏季` };
+  if (month <= 9)
+    return { season: "FALL", seasonYear: year, label: `${year} 秋季` };
   return { season: "WINTER", seasonYear: year + 1, label: `${year + 1} 冬季` };
 }
 
