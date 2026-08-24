@@ -71,19 +71,35 @@ export function deriveAiringSchedule(
 ): AiringSchedule {
 	const observed = getTokyoDateTime(observation.airingAt);
 	const minuteOfDayJst = observed.hour * 60 + observed.minute;
-	const isLateNightRollover =
+	const observedEpisode = episodes.find(
+		(episode) => episode.ep === observation.episode,
+	);
+	const previousDate = addDateKeyDays(observed.dateKey, -1);
+	let episodeDateOffset: 0 | 1 | null = null;
+	if (observedEpisode?.airdate === observed.dateKey) {
+		episodeDateOffset = 0;
+	} else if (
+		observedEpisode?.airdate === previousDate &&
+		minuteOfDayJst < LATE_NIGHT_CUTOFF_MINUTES
+	) {
+		episodeDateOffset = 1;
+	}
+	const isCalendarLateNightRollover =
 		bgmWeekday !== undefined &&
 		observed.weekday === nextWeekday(bgmWeekday) &&
 		minuteOfDayJst < LATE_NIGHT_CUTOFF_MINUTES;
-	const dayOffset = isLateNightRollover ? 1 : 0;
+	// BGM calendar 可能不收录长篇/非当季条目；此时用同一 BGM episode 的
+	// 名义日期识别“周一 24:00 = 周二 00:00”，不能退化成当日 00:00。
+	const dayOffset = episodeDateOffset ?? (isCalendarLateNightRollover ? 1 : 0);
 	const nominalDate = addDateKeyDays(observed.dateKey, -dayOffset);
 	const episodeAligned = episodes.some(
 		(episode) =>
 			episode.airdate === nominalDate && episode.ep === observation.episode,
 	);
 	const weekdayAligned =
-		bgmWeekday !== undefined &&
-		(observed.weekday === bgmWeekday || isLateNightRollover);
+		bgmWeekday === undefined
+			? episodeAligned
+			: observed.weekday === bgmWeekday || isCalendarLateNightRollover;
 
 	return {
 		minuteOfDayJst,
