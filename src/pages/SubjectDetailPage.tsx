@@ -46,6 +46,10 @@ import CornerStack from "../components/CornerStack";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import {
+	getCrossSeasonEpisodeOffset,
+	isCrossSeasonCountEnabled,
+} from "../api/cross-season-count";
+import {
 	COLLECTION_TASK_QUEUE_EVENT,
 	enqueueCompleteProgressTask,
 	enqueueSetCollectionTypeTask,
@@ -178,8 +182,7 @@ function extractArtist(
 	const lyricist = infobox.find((i) => i.key === "作词");
 	const composer = infobox.find((i) => i.key === "作曲");
 	const parts: string[] = [];
-	if (lyricist && typeof lyricist.value === "string")
-		parts.push(lyricist.value);
+	if (lyricist && typeof lyricist.value === "string") parts.push(lyricist.value);
 	if (
 		composer &&
 		typeof composer.value === "string" &&
@@ -230,12 +233,11 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 	const navigate = useNavigate();
 	const location = useLocation();
 	const queryClient = useQueryClient();
+	const crossSeasonCount = isCrossSeasonCountEnabled();
 	const [targetEp, setTargetEp] = useState<number | null>(null);
 	const [paletteOpen, setPaletteOpen] = useState(false);
 	const [paletteIndex, setPaletteIndex] = useState(0);
-	const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(
-		null,
-	);
+	const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
 	const [collectionTasks, setCollectionTasks] = useState<CollectionTask[]>([]);
 	const [loadSecondaryDetailData, setLoadSecondaryDetailData] = useState(false);
 	const [loadEpisodeData, setLoadEpisodeData] = useState(false);
@@ -533,10 +535,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 		window.addEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
 		return () => {
 			cancelled = true;
-			window.removeEventListener(
-				COLLECTION_TASK_QUEUE_EVENT,
-				syncCollectionTasks,
-			);
+			window.removeEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
 		};
 	}, []);
 
@@ -604,9 +603,12 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 		mainEps.length > 0
 			? mainEps.length
 			: subject?.total_episodes || subject?.eps || 0;
+	const episodeOffset = crossSeasonCount
+		? getCrossSeasonEpisodeOffset(mainEps)
+		: 0;
+	const displayedTotalEp = totalEp + episodeOffset;
 	const subjectCollectionTasks = useMemo(
-		() =>
-			collectionTasks.filter((task) => task.payload.subjectId === subjectId),
+		() => collectionTasks.filter((task) => task.payload.subjectId === subjectId),
 		[collectionTasks, subjectId],
 	);
 	const optimisticCollectionPatch = useMemo(
@@ -623,6 +625,8 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 		optimisticCollectionPatch?.ep_status ?? collection?.ep_status ?? 0;
 	const currentColType = optimisticCollectionPatch?.type ?? collection?.type;
 	const displayTarget = targetEp ?? currentEp;
+	const displayedCurrentEp = currentEp + episodeOffset;
+	const displayedTargetEp = displayTarget + episodeOffset;
 	const isDirty = targetEp !== null && targetEp !== currentEp;
 	const airWeekdayLabel = getAirWeekdayLabel(
 		subject?.air_weekday,
@@ -702,7 +706,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 		return new Promise((resolve) => {
 			setConfirmDialog({
 				title: "保存后标记为「看过」？",
-				message: `观看进度将保存为 ${progressTarget} / ${totalEp} 集，是否在保存成功后标记为「看过」？`,
+				message: `观看进度将保存为 ${progressTarget + episodeOffset} / ${displayedTotalEp} 集，是否在保存成功后标记为「看过」？`,
 				cancelLabel: "仅保存进度",
 				confirmLabel: "保存并标记",
 				onCancel: () => resolve(false),
@@ -864,17 +868,14 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 			},
 			{
 				key: "Enter",
-				when: ({ mod, isInput }) =>
-					(mod || !isInput) && !paletteOpen && !isDirty,
+				when: ({ mod, isInput }) => (mod || !isInput) && !paletteOpen && !isDirty,
 				handler: () => {
 					const name = getSubjectTitleForCopy(
 						subject?.name_cn || subject?.name || "",
 					);
 					if (name) {
 						navigator.clipboard.writeText(name).then(async () => {
-							const { getCurrentWindow } = await import(
-								"@tauri-apps/api/window"
-							);
+							const { getCurrentWindow } = await import("@tauri-apps/api/window");
 							await invoke("show_toast", { message: "已复制条目名" });
 							getCurrentWindow().hide();
 						});
@@ -885,9 +886,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 				key: "ArrowDown",
 				when: () => paletteOpen,
 				handler: () => {
-					setPaletteIndex((i) =>
-						Math.min(COLLECTION_OPTIONS.length - 1, i + 1),
-					);
+					setPaletteIndex((i) => Math.min(COLLECTION_OPTIONS.length - 1, i + 1));
 				},
 			},
 			{
@@ -998,10 +997,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 			{/* Two-column body */}
 			<div className="flex-1 flex overflow-hidden">
 				{/* Left column: scrollable content */}
-				<div
-					ref={leftColumnRef}
-					className="flex-1 overflow-y-auto p-5 space-y-6"
-				>
+				<div ref={leftColumnRef} className="flex-1 overflow-y-auto p-5 space-y-6">
 					{subject?.summary && (
 						<section>
 							<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">
@@ -1046,9 +1042,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 										<span className="text-fg-secondary">
 											{names.map((name, i) => (
 												<span key={name}>
-													{i > 0 && (
-														<span className="text-fg-tertiary/50"> / </span>
-													)}
+													{i > 0 && <span className="text-fg-tertiary/50"> / </span>}
 													<span
 														className="cursor-pointer hover:text-accent transition-colors"
 														onClick={() => copyText(name)}
@@ -1074,9 +1068,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 								<div className="space-y-3">
 									{songGroups.ops.length > 0 && (
 										<div>
-											<span className="text-[11px] text-fg-tertiary/70">
-												片头曲 (OP)
-											</span>
+											<span className="text-[11px] text-fg-tertiary/70">片头曲 (OP)</span>
 											<div className="space-y-1 mt-1">
 												{songGroups.ops.map((r) => (
 													<div
@@ -1091,10 +1083,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 															{r.name_cn && r.name ? ` / ${r.name}` : ""}
 														</span>
 														{artistMap[r.id] ? (
-															<span className="text-fg-tertiary">
-																{" "}
-																· {artistMap[r.id]}
-															</span>
+															<span className="text-fg-tertiary"> · {artistMap[r.id]}</span>
 														) : null}
 													</div>
 												))}
@@ -1103,9 +1092,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 									)}
 									{songGroups.eds.length > 0 && (
 										<div>
-											<span className="text-[11px] text-fg-tertiary/70">
-												片尾曲 (ED)
-											</span>
+											<span className="text-[11px] text-fg-tertiary/70">片尾曲 (ED)</span>
 											<div className="space-y-1 mt-1">
 												{songGroups.eds.map((r) => (
 													<div
@@ -1120,10 +1107,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 															{r.name_cn && r.name ? ` / ${r.name}` : ""}
 														</span>
 														{artistMap[r.id] ? (
-															<span className="text-fg-tertiary">
-																{" "}
-																· {artistMap[r.id]}
-															</span>
+															<span className="text-fg-tertiary"> · {artistMap[r.id]}</span>
 														) : null}
 													</div>
 												))}
@@ -1132,9 +1116,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 									)}
 									{songGroups.osts.length > 0 && (
 										<div>
-											<span className="text-[11px] text-fg-tertiary/70">
-												原声集 (OST)
-											</span>
+											<span className="text-[11px] text-fg-tertiary/70">原声集 (OST)</span>
 											<div className="space-y-1 mt-1">
 												{songGroups.osts.map((r) => (
 													<div
@@ -1149,10 +1131,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 															{r.name_cn && r.name ? ` / ${r.name}` : ""}
 														</span>
 														{artistMap[r.id] ? (
-															<span className="text-fg-tertiary">
-																{" "}
-																· {artistMap[r.id]}
-															</span>
+															<span className="text-fg-tertiary"> · {artistMap[r.id]}</span>
 														) : null}
 													</div>
 												))}
@@ -1161,9 +1140,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 									)}
 									{songGroups.characterSongs.length > 0 && (
 										<div>
-											<span className="text-[11px] text-fg-tertiary/70">
-												角色歌
-											</span>
+											<span className="text-[11px] text-fg-tertiary/70">角色歌</span>
 											<div className="space-y-1 mt-1">
 												{songGroups.characterSongs.map((r) => (
 													<div
@@ -1178,10 +1155,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 															{r.name_cn && r.name ? ` / ${r.name}` : ""}
 														</span>
 														{artistMap[r.id] ? (
-															<span className="text-fg-tertiary">
-																{" "}
-																· {artistMap[r.id]}
-															</span>
+															<span className="text-fg-tertiary"> · {artistMap[r.id]}</span>
 														) : null}
 													</div>
 												))}
@@ -1267,9 +1241,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 									{subject.date}
 								</span>
 								{airWeekdayLabel ? (
-									<span className="text-fg-tertiary ml-1">
-										({airWeekdayLabel})
-									</span>
+									<span className="text-fg-tertiary ml-1">({airWeekdayLabel})</span>
 								) : null}
 							</div>
 						)}
@@ -1297,11 +1269,11 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 									<span className="text-fg-tertiary">进度</span>
 									{isDirty ? (
 										<span className="text-success tabular-nums">
-											{currentEp} → {displayTarget} / {totalEp}
+											{displayedCurrentEp} → {displayedTargetEp} / {displayedTotalEp}
 										</span>
 									) : (
 										<span className="text-fg-secondary tabular-nums">
-											{currentEp} / {totalEp}
+											{displayedCurrentEp} / {displayedTotalEp}
 										</span>
 									)}
 								</div>
@@ -1309,7 +1281,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 									<div
 										className={`h-full rounded-full transition-all ${isDirty ? "bg-success" : "bg-accent"}`}
 										style={{
-											width: `${Math.min(100, (displayTarget / totalEp) * 100)}%`,
+											width: `${Math.min(100, (displayedTargetEp / displayedTotalEp) * 100)}%`,
 										}}
 									/>
 								</div>
@@ -1332,9 +1304,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 									!activeCollectionTask &&
 									!failedCollectionTask &&
 									totalEp > 0 && (
-										<p className="text-[12px] text-fg-tertiary mt-1.5">
-											← → 调整进度
-										</p>
+										<p className="text-[12px] text-fg-tertiary mt-1.5">← → 调整进度</p>
 									)}
 							</div>
 						)}
@@ -1387,9 +1357,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 					/>
 					<div className="relative w-64 bg-elevated rounded-xl border border-line-strong shadow-pop overflow-hidden">
 						<div className="px-4 pt-3 pb-2">
-							<span className="text-[12px] font-semibold text-fg">
-								收藏状态
-							</span>
+							<span className="text-[12px] font-semibold text-fg">收藏状态</span>
 						</div>
 						<div className="px-2 pb-1">
 							{COLLECTION_OPTIONS.map((opt, i) => (

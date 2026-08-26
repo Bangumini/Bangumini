@@ -11,6 +11,10 @@ import {
 	shouldCopySubjectTitleWithSeason,
 } from "../api/subject-title-copy";
 import {
+	isCrossSeasonCountEnabled,
+	setCrossSeasonCountEnabled,
+} from "../api/cross-season-count";
+import {
 	AUTO_CHECK_UPDATE_KEY,
 	getLastUpdateCheckTime,
 	getSkippedUpdateVersion,
@@ -108,6 +112,9 @@ export default function SettingsPage() {
 	const [copyTitleWithSeason, setCopyTitleWithSeason] = useState(
 		shouldCopySubjectTitleWithSeason,
 	);
+	const [crossSeasonCount, setCrossSeasonCount] = useState(
+		isCrossSeasonCountEnabled,
+	);
 	// 自动检查更新开关（默认开启）
 	const [autoCheckUpdate, setAutoCheckUpdate] = useState(
 		isAutoCheckUpdateEnabled,
@@ -182,8 +189,7 @@ export default function SettingsPage() {
 								if (!total) {
 									return prev;
 								}
-								const next =
-									prev + ((event.data?.chunkLength ?? 0) / total) * 100;
+								const next = prev + ((event.data?.chunkLength ?? 0) / total) * 100;
 								return Math.min(100, Math.round(next));
 							});
 							break;
@@ -237,6 +243,12 @@ export default function SettingsPage() {
 		const next = !copyTitleWithSeason;
 		setCopyTitleWithSeason(next);
 		setCopySubjectTitleWithSeason(next);
+	};
+
+	const handleToggleCrossSeasonCount = () => {
+		const next = !crossSeasonCount;
+		setCrossSeasonCount(next);
+		setCrossSeasonCountEnabled(next);
 	};
 
 	const toggleAutoCheckUpdate = () => {
@@ -332,14 +344,10 @@ export default function SettingsPage() {
 				{proxy.enabled && (
 					<div className="space-y-3">
 						<div>
-							<label className="block text-[12px] text-fg-tertiary mb-1">
-								协议
-							</label>
+							<label className="block text-[12px] text-fg-tertiary mb-1">协议</label>
 							<select
 								value={proxy.protocol}
-								onChange={(e) =>
-									setProxy((p) => ({ ...p, protocol: e.target.value }))
-								}
+								onChange={(e) => setProxy((p) => ({ ...p, protocol: e.target.value }))}
 								className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg focus:border-accent focus:outline-none"
 							>
 								<option value="http">HTTP</option>
@@ -349,29 +357,21 @@ export default function SettingsPage() {
 						</div>
 						<div className="flex gap-2">
 							<div className="flex-1">
-								<label className="block text-[12px] text-fg-tertiary mb-1">
-									主机
-								</label>
+								<label className="block text-[12px] text-fg-tertiary mb-1">主机</label>
 								<input
 									type="text"
 									value={proxy.host}
-									onChange={(e) =>
-										setProxy((p) => ({ ...p, host: e.target.value }))
-									}
+									onChange={(e) => setProxy((p) => ({ ...p, host: e.target.value }))}
 									placeholder="127.0.0.1"
 									className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
 								/>
 							</div>
 							<div className="w-24">
-								<label className="block text-[12px] text-fg-tertiary mb-1">
-									端口
-								</label>
+								<label className="block text-[12px] text-fg-tertiary mb-1">端口</label>
 								<input
 									type="text"
 									value={proxy.port}
-									onChange={(e) =>
-										setProxy((p) => ({ ...p, port: e.target.value }))
-									}
+									onChange={(e) => setProxy((p) => ({ ...p, port: e.target.value }))}
 									placeholder="8080"
 									className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
 								/>
@@ -385,9 +385,7 @@ export default function SettingsPage() {
 								<input
 									type="text"
 									value={proxy.username}
-									onChange={(e) =>
-										setProxy((p) => ({ ...p, username: e.target.value }))
-									}
+									onChange={(e) => setProxy((p) => ({ ...p, username: e.target.value }))}
 									className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
 								/>
 							</div>
@@ -398,9 +396,7 @@ export default function SettingsPage() {
 								<input
 									type="password"
 									value={proxy.password}
-									onChange={(e) =>
-										setProxy((p) => ({ ...p, password: e.target.value }))
-									}
+									onChange={(e) => setProxy((p) => ({ ...p, password: e.target.value }))}
 									className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
 								/>
 							</div>
@@ -436,6 +432,30 @@ export default function SettingsPage() {
 							<span
 								className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
 									copyTitleWithSeason ? "translate-x-4" : "translate-x-0"
+								}`}
+							/>
+						</button>
+					</div>
+					<div className="flex items-center justify-between gap-4">
+						<div>
+							<div className="text-[13px] text-fg-secondary">跨季连续计数</div>
+							<p className="text-[11px] text-fg-tertiary mt-0.5">
+								例如第二季第 1 集显示为第 13 集
+							</p>
+						</div>
+						<button
+							type="button"
+							role="switch"
+							aria-label="跨季连续计数"
+							aria-checked={crossSeasonCount}
+							onClick={handleToggleCrossSeasonCount}
+							className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+								crossSeasonCount ? "bg-accent" : "bg-line"
+							}`}
+						>
+							<span
+								className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
+									crossSeasonCount ? "translate-x-4" : "translate-x-0"
 								}`}
 							/>
 						</button>
