@@ -779,8 +779,10 @@ export default function CollectionsPage() {
 		[rawCollections, airingMap],
 	);
 
-	// 非日历但在补的条目——拉取 AniList 数据以确认是否在播
+	// 非日历且未看完的条目——拉取 AniList 数据以确认是否在播
 	// AniList nextAiringEpisode 是 isAiring 的二级判定信号
+	// 未开始看（ep_status === 0）的条目同样需要确认，否则在播但未收录
+	// 进 BGM 日历的条目会被误判为"完结 · 未观看"
 	const staleAiringIds = useMemo(
 		() =>
 			isWatching
@@ -788,7 +790,7 @@ export default function CollectionsPage() {
 						.filter((item) => !airingMap.has(item.subject_id))
 						.filter((item) => {
 							const total = item.subject.eps || item.subject.total_episodes || 0;
-							return item.ep_status > 0 && (total === 0 || item.ep_status < total);
+							return total === 0 || item.ep_status < total;
 						})
 						.map((item) => item.subject_id)
 				: [],
