@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types scripts/test-keyboard-dispatch.mjs",
+    "test": "node --experimental-strip-types scripts/test-keyboard-dispatch.mjs && node --experimental-strip-types scripts/test-airing-schedule.mjs && node --experimental-strip-types scripts/test-anilist-airing.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

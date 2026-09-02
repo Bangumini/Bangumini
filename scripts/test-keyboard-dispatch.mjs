@@ -6,7 +6,7 @@
 //
 // 运行：node --experimental-strip-types scripts/test-keyboard-dispatch.mjs
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -72,7 +72,7 @@ globalThis.window = {
 };
 
 const { useKeyboardShortcuts } = await import(
-	join(tmpDir, "useKeyboardShortcuts.ts")
+	pathToFileURL(join(tmpDir, "useKeyboardShortcuts.ts")).href
 );
 
 // ---------- 4. 注册与真实组件一致的快捷键 ----------

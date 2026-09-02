@@ -30,6 +30,7 @@ docs/todo/
 AGENTS.md
 CONTEXT.md
 docs/adr
+.zcode/
 
 # 本地测试数据（含 API token，勿提交）
 tests/
