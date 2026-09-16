@@ -21,6 +21,29 @@ function getTotalEp(c: UserCollection): number {
 	return c.subject.total_episodes || c.subject.eps || 0;
 }
 
+/** 返回可用于计算观看完成度的总集数；缺失或非正数视为未知。 */
+function getKnownTotalEp(c: UserCollection): number | null {
+	const { total_episodes: totalEpisodes, eps } = c.subject;
+	if (Number.isFinite(totalEpisodes) && totalEpisodes > 0) return totalEpisodes;
+	if (Number.isFinite(eps) && eps > 0) return eps;
+	return null;
+}
+
+/**
+ * 计算在播且未追平条目的兴趣权重。
+ *
+ * 短篇作品仅凭少量已看集数不应获得过高权重，因此完成度外还加入最多六集的观看深度。
+ */
+export function getInterestWeight(c: UserCollection): number | null {
+	const totalEpisodes = getKnownTotalEp(c);
+	if (totalEpisodes === null) return null;
+
+	const watchedEpisodes = Math.max(c.ep_status, 0);
+	const completion = Math.min(Math.max(watchedEpisodes / totalEpisodes, 0), 1);
+	const watchDepth = Math.min(watchedEpisodes / 6, 1);
+	return 0.75 * completion + 0.25 * watchDepth;
+}
+
 function getWeekdayFromDate(dateStr: string): number {
 	const parts = dateStr.split("-").map(Number);
 	if (parts.length !== 3) return 0;
@@ -180,7 +203,19 @@ export function sortCollections(
 		);
 	};
 
-	groupI.sort(sortByWeekdayThenTime);
+	// Group I：有总集数的条目先按兴趣权重降序；权重相同或总集数未知时，
+	// 继续按下一次更新时间排序，避免改变原有的追番节奏。
+	groupI.sort((a, b) => {
+		const interestA = getInterestWeight(a.c);
+		const interestB = getInterestWeight(b.c);
+		if (interestA !== null && interestB === null) return -1;
+		if (interestA === null && interestB !== null) return 1;
+		if (interestA !== null && interestB !== null) {
+			const interestDiff = interestB - interestA;
+			if (interestDiff !== 0) return interestDiff;
+		}
+		return sortByWeekdayThenTime(a, b);
+	});
 	groupIII.sort(sortByWeekdayThenTime);
 
 	// Group V：按开播日期数值排序

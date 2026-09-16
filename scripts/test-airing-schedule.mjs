@@ -9,6 +9,7 @@ import {
 } from "../shared/airing-schedule.ts";
 import {
 	getDisplayLabel,
+	getInterestWeight,
 	sortCollections,
 } from "../shared/sort-collections.ts";
 
@@ -342,6 +343,69 @@ assert.equal(
 	finishedSorted[0].group,
 	"finished_unwatched",
 	"无在播信号时未开始看的条目仍应归入完结 · 未观看",
+);
+
+// 未追上进度组：有已知总集数的条目须优先按兴趣权重排序；未知总集数统一靠后。
+const interestSubjects = [
+	{ id: 910001, name: "Low interest", name_cn: "低兴趣", eps: 12, total_episodes: 12 },
+	{ id: 910002, name: "Unknown total", name_cn: "未知总集数", eps: 0, total_episodes: 0 },
+	{ id: 910003, name: "High interest", name_cn: "高兴趣", eps: 12, total_episodes: 12 },
+];
+const [lowInterestSubject, unknownTotalSubject, highInterestSubject] = interestSubjects;
+const lowInterestCollection = {
+	subject_id: lowInterestSubject.id,
+	subject: lowInterestSubject,
+	ep_status: 1,
+};
+const unknownTotalCollection = {
+	subject_id: unknownTotalSubject.id,
+	subject: unknownTotalSubject,
+	ep_status: 5,
+};
+const highInterestCollection = {
+	subject_id: highInterestSubject.id,
+	subject: highInterestSubject,
+	ep_status: 6,
+};
+assert.equal(getInterestWeight(highInterestCollection), 0.625);
+assert.equal(getInterestWeight(unknownTotalCollection), null);
+const interestSorted = sortCollections(
+	[unknownTotalCollection, lowInterestCollection, highInterestCollection],
+	[{ weekday: { id: 1 }, items: interestSubjects }],
+	1,
+	new Map(interestSubjects.map(({ id }) => [id, 7])),
+);
+assert.deepEqual(
+	interestSorted.map(({ collection: { subject_id } }) => subject_id),
+	[highInterestSubject.id, lowInterestSubject.id, unknownTotalSubject.id],
+	"兴趣权重高者应优先，未知总集数条目必须排在有权重条目之后",
+);
+
+// 权重相同时，仍按下一次更新的精确时刻排序。
+const equalInterestSubjects = [
+	{ id: 910004, name: "Later", name_cn: "稍晚更新", eps: 12, total_episodes: 12 },
+	{ id: 910005, name: "Earlier", name_cn: "较早更新", eps: 12, total_episodes: 12 },
+];
+const equalInterestCollections = equalInterestSubjects.map((subject) => ({
+	subject_id: subject.id,
+	subject,
+	ep_status: 3,
+}));
+const equalInterestSorted = sortCollections(
+	equalInterestCollections,
+	[{ weekday: { id: 1 }, items: equalInterestSubjects }],
+	1,
+	new Map(equalInterestSubjects.map(({ id }) => [id, 4])),
+	undefined,
+	new Map([
+		[equalInterestSubjects[0].id, Date.UTC(2026, 8, 21, 12, 0)],
+		[equalInterestSubjects[1].id, Date.UTC(2026, 8, 21, 10, 0)],
+	]),
+);
+assert.deepEqual(
+	equalInterestSorted.map(({ collection: { subject_id } }) => subject_id),
+	[equalInterestSubjects[1].id, equalInterestSubjects[0].id],
+	"兴趣权重相同时应保留下一次更新更早者优先的规则",
 );
 
 process.stdout.write("airing schedule: 全部通过 ✓\n");
