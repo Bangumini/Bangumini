@@ -1,4 +1,5 @@
 export const LATE_NIGHT_CUTOFF_MINUTES = 6 * 60;
+export const RECENT_AIRING_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
@@ -157,4 +158,37 @@ export function getNextEpisodeAiringAt(
 		}
 	}
 	return nextAiringAt;
+}
+
+/** 返回截至当前时刻最近已播的一集的精确播出时间；无可靠排期时返回 null。 */
+export function getLatestEpisodeAiringAt(
+	episodes: AiringEpisode[],
+	schedule: AiringSchedule | null,
+	nowMs: number,
+): number | null {
+	if (!schedule) return null;
+
+	let latestAiringAt: number | null = null;
+	for (const episode of episodes) {
+		if (!episode.airdate) continue;
+		const airingAt = getEffectiveAiringAt(episode, schedule);
+		if (airingAt > nowMs) continue;
+		if (latestAiringAt === null || airingAt > latestAiringAt) {
+			latestAiringAt = airingAt;
+		}
+	}
+	return latestAiringAt;
+}
+
+/** 是否仍处于最近一集播出后的六小时提示窗口内。 */
+export function isRecentlyAired(
+	latestAiringAt: number | null | undefined,
+	nowMs: number,
+): boolean {
+	return (
+		latestAiringAt !== null &&
+		latestAiringAt !== undefined &&
+		nowMs >= latestAiringAt &&
+		nowMs - latestAiringAt < RECENT_AIRING_WINDOW_MS
+	);
 }

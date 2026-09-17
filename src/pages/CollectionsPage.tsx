@@ -20,7 +20,10 @@ import { SubjectTypeLabel } from "@shared/api/types";
 import {
 	deriveAiredEpisodeCount,
 	deriveAiringSchedule,
+	getLatestEpisodeAiringAt,
 	getNextEpisodeAiringAt,
+	isRecentlyAired,
+	RECENT_AIRING_WINDOW_MS,
 	type AiringObservation,
 	type AiringSchedule,
 } from "@shared/airing-schedule";
@@ -74,6 +77,7 @@ const EMPTY_SORTED: SortedCollection[] = [];
 const EMPTY_EPISODE_LIST_MAP = new Map<number, Episode[]>();
 const EMPTY_AIRING_RECORD_MAP = new Map<number, AiringCacheRecord>();
 const EMPTY_DISPLAY_LABEL_MAP = new Map<number, string | null>();
+const EMPTY_SUBJECT_ID_SET = new Set<number>();
 const CALENDAR_QUERY_KEY = ["calendar"] as const;
 
 type DataSource = "cache" | "network";
@@ -112,6 +116,7 @@ type CommittedCollectionsState = {
 	source: DataSource;
 	sorted: SortedCollection[];
 	displayLabelMap: Map<number, string | null>;
+	justUpdatedSubjectIds: Set<number>;
 };
 
 function getPageStateKey(collectionType: string, searchText: string) {
@@ -343,6 +348,7 @@ function deriveAiringMaps(
 	const scheduleMap = new Map<number, AiringSchedule>();
 	const airedEpMap = new Map<number, number>();
 	const nextAiringAtMap = new Map<number, number>();
+	const latestAiringAtMap = new Map<number, number>();
 
 	for (const [subjectId, episodes] of episodeListMap) {
 		const observation = observationMap.get(subjectId);
@@ -355,9 +361,33 @@ function deriveAiringMaps(
 		if (nextAiringAt !== null) {
 			nextAiringAtMap.set(subjectId, nextAiringAt);
 		}
+		const latestAiringAt = getLatestEpisodeAiringAt(episodes, schedule, nowMs);
+		if (latestAiringAt !== null) {
+			latestAiringAtMap.set(subjectId, latestAiringAt);
+		}
 	}
 
-	return { scheduleMap, airedEpMap, nextAiringAtMap };
+	return { scheduleMap, airedEpMap, nextAiringAtMap, latestAiringAtMap };
+}
+
+function getJustUpdatedSubjectIds(
+	sorted: SortedCollection[],
+	latestAiringAtMap: ReadonlyMap<number, number>,
+	nowMs: number,
+) {
+	const subjectIds = new Set<number>();
+	for (const item of sorted) {
+		if (
+			item.group === "airing_not_caught" &&
+			isRecentlyAired(
+				latestAiringAtMap.get(item.collection.subject_id),
+				nowMs,
+			)
+		) {
+			subjectIds.add(item.collection.subject_id);
+		}
+	}
+	return subjectIds;
 }
 
 async function backfillTotalEpisodesFromCache(collections: UserCollection[]) {
@@ -978,22 +1008,37 @@ export default function CollectionsPage() {
 	);
 	const airedEpMap = derivedAiringData.airedEpMap;
 	const nextAiringAtMap = derivedAiringData.nextAiringAtMap;
+	const latestAiringAtMap = derivedAiringData.latestAiringAtMap;
 
 	useEffect(() => {
-		if (!isWatching || nextAiringAtMap.size === 0) return;
+		if (!isWatching) return;
 		const now = Date.now();
-		const nextBoundary = Math.min(...nextAiringAtMap.values());
+		const nextAiringBoundary =
+			nextAiringAtMap.size > 0
+				? Math.min(...nextAiringAtMap.values())
+				: Number.POSITIVE_INFINITY;
+		const recentTagExpiry = Math.min(
+			...Array.from(latestAiringAtMap.values())
+				.map((airingAt) => airingAt + RECENT_AIRING_WINDOW_MS)
+				.filter((expiry) => expiry > now),
+			Number.POSITIVE_INFINITY,
+		);
+		const nextClockBoundary = Math.min(nextAiringBoundary, recentTagExpiry);
+		if (!Number.isFinite(nextClockBoundary)) return;
+
 		const timer = window.setTimeout(
 			() => {
 				setNowMs(Date.now());
-				void queryClient.invalidateQueries({
-					queryKey: ["anilist-airing-times-v2"],
-				});
+				if (nextAiringBoundary <= recentTagExpiry) {
+					void queryClient.invalidateQueries({
+						queryKey: ["anilist-airing-times-v2"],
+					});
+				}
 			},
-			Math.max(1000, nextBoundary - now + CLOCK_EPSILON_MS),
+			Math.max(1000, nextClockBoundary - now + CLOCK_EPSILON_MS),
 		);
 		return () => window.clearTimeout(timer);
-	}, [isWatching, nextAiringAtMap, queryClient]);
+	}, [isWatching, latestAiringAtMap, nextAiringAtMap, queryClient]);
 
 	const sorted = useMemo(() => {
 		if (isWatching && calendar) {
@@ -1038,6 +1083,10 @@ export default function CollectionsPage() {
 		}
 		return map;
 	}, [sorted, today, nextAiringAtMap, nowMs]);
+	const justUpdatedSubjectIds = useMemo(
+		() => getJustUpdatedSubjectIds(sorted, latestAiringAtMap, nowMs),
+		[sorted, latestAiringAtMap, nowMs],
+	);
 
 	const committedScopeKey = `${uname ?? ""}:${collectionType}`;
 	const shouldWaitForCalendar = isWatching;
@@ -1100,6 +1149,7 @@ export default function CollectionsPage() {
 	);
 	const cacheAiredEpMap = cacheDerivedAiringData.airedEpMap;
 	const cacheNextAiringAtMap = cacheDerivedAiringData.nextAiringAtMap;
+	const cacheLatestAiringAtMap = cacheDerivedAiringData.latestAiringAtMap;
 	const cacheSorted = useMemo(() => {
 		if (isWatching && cacheCalendar) {
 			return sortCollections(
@@ -1142,6 +1192,15 @@ export default function CollectionsPage() {
 		}
 		return map;
 	}, [cacheSorted, today, cacheNextAiringAtMap, nowMs]);
+	const cacheJustUpdatedSubjectIds = useMemo(
+		() =>
+			getJustUpdatedSubjectIds(
+				cacheSorted,
+				cacheLatestAiringAtMap,
+				nowMs,
+			),
+		[cacheSorted, cacheLatestAiringAtMap, nowMs],
+	);
 	const isDisplayDataAvailable =
 		Boolean(uname) &&
 		collData !== undefined &&
@@ -1218,6 +1277,9 @@ export default function CollectionsPage() {
 		const nextDisplayLabelMap = shouldCommitSettledSnapshot
 			? displayLabelMap
 			: cacheDisplayLabelMap;
+		const nextJustUpdatedSubjectIds = shouldCommitSettledSnapshot
+			? justUpdatedSubjectIds
+			: cacheJustUpdatedSubjectIds;
 
 		setCommittedState((prev) => {
 			if (!shouldCommitSettledSnapshot && prev?.scopeKey === committedScopeKey) {
@@ -1232,11 +1294,13 @@ export default function CollectionsPage() {
 				source: nextSource,
 				sorted: nextSorted,
 				displayLabelMap: nextDisplayLabelMap,
+				justUpdatedSubjectIds: nextJustUpdatedSubjectIds,
 			};
 		});
 	}, [
 		cacheCommittedVersion,
 		cacheDisplayLabelMap,
+		cacheJustUpdatedSubjectIds,
 		cacheSorted,
 		canCommitCacheSnapshot,
 		committedScopeKey,
@@ -1244,6 +1308,7 @@ export default function CollectionsPage() {
 		committedVersion,
 		displayLabelMap,
 		isDisplayReady,
+		justUpdatedSubjectIds,
 		sorted,
 		uname,
 	]);
@@ -1253,6 +1318,8 @@ export default function CollectionsPage() {
 	const visibleSorted = activeCommittedState?.sorted ?? EMPTY_SORTED;
 	const visibleDisplayLabelMap =
 		activeCommittedState?.displayLabelMap ?? EMPTY_DISPLAY_LABEL_MAP;
+	const visibleJustUpdatedSubjectIds =
+		activeCommittedState?.justUpdatedSubjectIds ?? EMPTY_SUBJECT_ID_SET;
 
 	const filtered = searchText
 		? visibleSorted.filter((item) => {
@@ -1533,7 +1600,10 @@ export default function CollectionsPage() {
 									onDoubleClick={() => openSubject(s.id)}
 									accessories={
 										<>
-											{label && <Tag>{label}</Tag>}
+											{visibleJustUpdatedSubjectIds.has(item.collection.subject_id) && (
+											<Tag>刚更新</Tag>
+										)}
+										{label && <Tag>{label}</Tag>}
 											{(s.score ?? s.rating?.score) ? (
 												<Rating score={s.score ?? s.rating!.score} />
 											) : null}
