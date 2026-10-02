@@ -63,9 +63,7 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 const LIMIT = 20;
 const COLLECTIONS_CACHE_PREFIX = "collections-";
 const AIRING_CACHE_PREFIX = "anilist-airing-v2-";
-const LEGACY_AIRING_CACHE_PREFIX = "anilist-airing-";
 const EPISODES_CACHE_PREFIX = "episodes-schedule-v2-";
-const LEGACY_EPISODES_CACHE_PREFIX = "episodes-";
 const AIRING_REQUEST_DELAY = 700;
 const AIRING_RECORD_MAX_AGE = 1000 * 60 * 60 * 24 * 14;
 const AIRING_NEGATIVE_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
@@ -117,6 +115,13 @@ type CommittedCollectionsState = {
 	sorted: SortedCollection[];
 	displayLabelMap: Map<number, string | null>;
 	justUpdatedSubjectIds: Set<number>;
+};
+
+type CachedSnapshot<T> = {
+	key: string;
+	value: T | null;
+	version: number;
+	complete: boolean;
 };
 
 function getPageStateKey(collectionType: string, searchText: string) {
@@ -470,6 +475,15 @@ export default function CollectionsPage() {
 	const [committedState, setCommittedState] =
 		useState<CommittedCollectionsState | null>(null);
 	const [querySources, setQuerySources] = useState<QuerySourceState>({});
+	const [cachedCollectionsSnapshot, setCachedCollectionsSnapshot] = useState<
+		CachedSnapshot<PagedResponse<UserCollection>>
+	>({ key: "", value: null, version: 0, complete: false });
+	const [cachedCalendarSnapshot, setCachedCalendarSnapshot] = useState<
+		CachedSnapshot<CalendarItem[]>
+	>({ key: "", value: null, version: 0, complete: false });
+	const [cachedEpisodeSnapshot, setCachedEpisodeSnapshot] = useState<
+		CachedSnapshot<Map<number, Episode[]>>
+	>({ key: "", value: null, version: 0, complete: false });
 	const [backgroundRefreshCount, setBackgroundRefreshCount] = useState(0);
 	const [shouldSuppressRefetch, setShouldSuppressRefetch] = useState(
 		initialState.isReturningFromDetail,
@@ -682,6 +696,12 @@ export default function CollectionsPage() {
 			if (cached) {
 				setQuerySource("collections", collectionsCacheKey, "cache");
 				await backfillTotalEpisodesFromCache(cached.payload.data);
+				setCachedCollectionsSnapshot({
+					key: collectionsCacheKey,
+					value: cached.payload,
+					version: cached.updatedAt,
+					complete: true,
+				});
 				const refreshTask = refreshQueryDataIfChanged({
 					queryClient,
 					queryKey: collectionsQueryKey,
@@ -700,6 +720,12 @@ export default function CollectionsPage() {
 				return cached.payload;
 			}
 
+			setCachedCollectionsSnapshot({
+				key: collectionsCacheKey,
+				value: null,
+				version: getCurrentTimestamp(),
+				complete: false,
+			});
 			try {
 				const result = await fetchAndCacheCollections(
 					collectionType,
@@ -714,6 +740,12 @@ export default function CollectionsPage() {
 				>(collectionsCacheKey, legacyCollections);
 				if (fallback) {
 					setQuerySource("collections", collectionsCacheKey, "cache");
+					setCachedCollectionsSnapshot({
+						key: collectionsCacheKey,
+						value: fallback,
+						version: getCurrentTimestamp(),
+						complete: true,
+					});
 					return fallback;
 				}
 				throw err;
@@ -736,6 +768,12 @@ export default function CollectionsPage() {
 			const cached = await readCachedValueEntry<CalendarItem[]>("calendar");
 			if (cached) {
 				setQuerySource("calendar", "calendar", "cache");
+				setCachedCalendarSnapshot({
+					key: "calendar",
+					value: cached.payload,
+					version: cached.updatedAt,
+					complete: true,
+				});
 				const refreshTask = refreshQueryDataIfChanged({
 					queryClient,
 					queryKey: CALENDAR_QUERY_KEY,
@@ -752,6 +790,12 @@ export default function CollectionsPage() {
 				return cached.payload;
 			}
 
+			setCachedCalendarSnapshot({
+				key: "calendar",
+				value: null,
+				version: getCurrentTimestamp(),
+				complete: false,
+			});
 			try {
 				const result = await fetchAndCacheCalendar();
 				setQuerySource("calendar", "calendar", "network");
@@ -763,6 +807,12 @@ export default function CollectionsPage() {
 				);
 				if (fallback) {
 					setQuerySource("calendar", "calendar", "cache");
+					setCachedCalendarSnapshot({
+						key: "calendar",
+						value: fallback,
+						version: getCurrentTimestamp(),
+						complete: true,
+					});
 					return fallback;
 				}
 				throw err;
@@ -798,6 +848,7 @@ export default function CollectionsPage() {
 		queryFn: () => readCachedAiringRecords(airingTimeCacheIds),
 		enabled: shouldReadAiringTimeCache,
 		staleTime: 5 * 60 * 1000,
+		refetchOnWindowFocus: "always",
 		refetchOnMount: shouldSuppressRefetch ? false : true,
 	});
 
@@ -854,6 +905,7 @@ export default function CollectionsPage() {
 		data: airingRecordMapData,
 		error: airingTimeError,
 		dataUpdatedAt: airingTimeUpdatedAt,
+		isFetching: isAiringTimeFetching,
 	} = useQuery({
 		queryKey: ["anilist-airing-times-v2", airingTimeTargetKey],
 		queryFn: async () => {
@@ -959,6 +1011,20 @@ export default function CollectionsPage() {
 				idsToFetch.push(id);
 			}
 
+			const cachedEpisodeListMap = new Map<number, Episode[]>();
+			for (const [id, cached] of cachedBySubjectId) {
+				cachedEpisodeListMap.set(id, cached.episodes);
+			}
+			setCachedEpisodeSnapshot({
+				key: episodesQuerySourceKey,
+				value: cachedEpisodeListMap,
+				version: Math.max(
+					0,
+					...Array.from(cachedBySubjectId.values(), (cached) => cached.checkedAt),
+				),
+				complete: cachedBySubjectId.size === allEpisodeIds.length,
+			});
+
 			const results = await Promise.allSettled(
 				idsToFetch.map(async (id) => ({
 					id,
@@ -1041,7 +1107,8 @@ export default function CollectionsPage() {
 	}, [isWatching, latestAiringAtMap, nextAiringAtMap, queryClient]);
 
 	const sorted = useMemo(() => {
-		if (isWatching && calendar) {
+		if (isWatching) {
+			if (!calendar) return EMPTY_SORTED;
 			return sortCollections(
 				rawCollections,
 				calendar,
@@ -1129,46 +1196,85 @@ export default function CollectionsPage() {
 		episodeMap !== undefined,
 		Boolean(episodeError),
 	);
-	const cacheCalendar = calendarSource === "cache" ? calendar : undefined;
+	const cacheCollectionsData =
+		cachedCollectionsSnapshot.key === collectionsCacheKey &&
+		cachedCollectionsSnapshot.complete
+			? cachedCollectionsSnapshot.value
+			: null;
+	const cacheRawCollections = cacheCollectionsData?.data ?? EMPTY_COLLECTIONS;
+	const cacheCalendar = useMemo(
+		() =>
+			isWatching &&
+			cachedCalendarSnapshot.key === "calendar" &&
+			cachedCalendarSnapshot.complete
+				? (cachedCalendarSnapshot.value ?? [])
+				: isWatching
+					? []
+					: undefined,
+		[isWatching, cachedCalendarSnapshot],
+	);
+	const cacheAiringMap = useMemo(
+		() => buildAiringMap(cacheCalendar),
+		[cacheCalendar],
+	);
 	const cacheAiringObservationMap = useMemo(
 		() =>
 			toAiringObservationMap(cachedAiringRecordMap ?? EMPTY_AIRING_RECORD_MAP),
 		[cachedAiringRecordMap],
 	);
 	const cacheEpisodeListMap =
-		episodesSource === "cache" ? episodeListMap : EMPTY_EPISODE_LIST_MAP;
+		cachedEpisodeSnapshot.key === episodesQuerySourceKey &&
+		cachedEpisodeSnapshot.value
+			? cachedEpisodeSnapshot.value
+			: EMPTY_EPISODE_LIST_MAP;
+	const cacheAiringMetadataIds = useMemo(
+		() =>
+			isWatching
+				? cacheRawCollections
+						.filter((item) => {
+							const total =
+								item.subject.total_episodes || item.subject.eps || 0;
+							return (
+								(total === 0 || item.ep_status < total) &&
+								!cacheAiringMap.has(item.subject_id)
+							);
+						})
+						.map((item) => item.subject_id)
+				: [],
+		[cacheRawCollections, cacheAiringMap, isWatching],
+	);
 	const cacheDerivedAiringData = useMemo(
 		() =>
 			deriveAiringMaps(
 				cacheEpisodeListMap,
 				cacheAiringObservationMap,
-				airingMap,
+				cacheAiringMap,
 				nowMs,
 			),
-		[cacheEpisodeListMap, cacheAiringObservationMap, airingMap, nowMs],
+		[cacheEpisodeListMap, cacheAiringObservationMap, cacheAiringMap, nowMs],
 	);
 	const cacheAiredEpMap = cacheDerivedAiringData.airedEpMap;
 	const cacheNextAiringAtMap = cacheDerivedAiringData.nextAiringAtMap;
 	const cacheLatestAiringAtMap = cacheDerivedAiringData.latestAiringAtMap;
 	const cacheSorted = useMemo(() => {
-		if (isWatching && cacheCalendar) {
+		if (isWatching) {
 			return sortCollections(
-				rawCollections,
-				cacheCalendar,
+				cacheRawCollections,
+				cacheCalendar ?? [],
 				today,
 				cacheAiredEpMap,
 				cacheAiringObservationMap,
 				cacheNextAiringAtMap,
 			);
 		}
-		return rawCollections.map((collection) => ({
+		return cacheRawCollections.map((collection) => ({
 			collection,
 			group: "completed" as const,
 			weekday: 0,
 			airedEp: 0,
 		}));
 	}, [
-		rawCollections,
+		cacheRawCollections,
 		cacheCalendar,
 		isWatching,
 		today,
@@ -1201,23 +1307,43 @@ export default function CollectionsPage() {
 			),
 		[cacheSorted, cacheLatestAiringAtMap, nowMs],
 	);
+	const hasCachedCollections =
+		cachedCollectionsSnapshot.key === collectionsCacheKey &&
+		cachedCollectionsSnapshot.complete &&
+		cachedCollectionsSnapshot.value !== null;
+	const hasCachedAiringMetadata =
+		cacheAiringMetadataIds.length === 0 ||
+		(cachedAiringRecordMap !== undefined &&
+			cacheAiringMetadataIds.every((subjectId) =>
+				cachedAiringRecordMap.has(subjectId),
+			));
+	const hasCachedEpisodes =
+		!shouldLoadEpisodes ||
+		(cachedEpisodeSnapshot.key === episodesQuerySourceKey &&
+			cachedEpisodeSnapshot.complete &&
+			cachedEpisodeSnapshot.value !== null);
 	const isDisplayDataAvailable =
 		Boolean(uname) &&
 		collData !== undefined &&
 		(!shouldWaitForCalendar || calendar !== undefined || Boolean(calError)) &&
 		isAiringTimeCacheReady &&
+		(!shouldWaitForAiringTimes ||
+			airingRecordMapData !== undefined ||
+			Boolean(airingTimeError)) &&
 		(!shouldWaitForEpisodes || episodeMap !== undefined || Boolean(episodeError));
 	const isDisplayNetworkIdle =
 		backgroundRefreshCount === 0 &&
 		!isCollectionsFetching &&
 		(!shouldWaitForCalendar || !isCalendarFetching) &&
+		(!shouldWaitForAiringTimes || !isAiringTimeFetching) &&
 		(!shouldWaitForEpisodes || !isEpisodeFetching);
 	const isDisplayReady =
 		Boolean(uname) && isDisplayDataAvailable && isDisplayNetworkIdle;
 	const canCommitCacheSnapshot =
 		Boolean(uname) &&
-		collData !== undefined &&
-		collectionsSource === "cache" &&
+		hasCachedCollections &&
+		hasCachedAiringMetadata &&
+		hasCachedEpisodes &&
 		isAiringTimeCacheReady;
 	const committedSource: DataSource = hasNetworkSource([
 		collectionsSource,
@@ -1232,12 +1358,18 @@ export default function CollectionsPage() {
 		todayDateKey,
 		nowMs,
 		"cache",
-		collUpdatedAt || "pending",
-		calendarSource === "cache" ? calendarUpdatedAt : "skip",
+		cachedCollectionsSnapshot.key === collectionsCacheKey
+			? cachedCollectionsSnapshot.version
+			: "pending",
+		cachedCalendarSnapshot.key === "calendar"
+			? cachedCalendarSnapshot.version
+			: "pending",
+		cachedEpisodeSnapshot.key === episodesQuerySourceKey
+			? cachedEpisodeSnapshot.version
+			: "pending",
 		shouldWaitForAiringTimeCache
 			? `airing-cache:${cachedAiringRecordMap !== undefined ? cachedAiringTimeUpdatedAt : cachedAiringTimeError ? "error" : "pending"}`
 			: "skip",
-		episodesSource === "cache" ? episodeUpdatedAt : "skip",
 	].join("|");
 	const committedVersion = [
 		committedScopeKey,
@@ -1431,9 +1563,7 @@ export default function CollectionsPage() {
 	const clearAiringCache = async () => {
 		await Promise.all([
 			deleteCachedValuesByPrefix(AIRING_CACHE_PREFIX),
-			deleteCachedValuesByPrefix(LEGACY_AIRING_CACHE_PREFIX),
 			deleteCachedValuesByPrefix(EPISODES_CACHE_PREFIX),
-			deleteCachedValuesByPrefix(LEGACY_EPISODES_CACHE_PREFIX),
 		]);
 		queryClient.resetQueries({ queryKey: ["episodes-schedule-v2"] });
 		queryClient.resetQueries({ queryKey: ["anilist-airing-times-v2"] });

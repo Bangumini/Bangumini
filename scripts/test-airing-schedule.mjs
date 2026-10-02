@@ -372,6 +372,44 @@ assert.equal(
 	"无在播信号时未开始看的条目仍应归入完结 · 未观看",
 );
 
+// 本地排序回归：已有 v2 在播缓存时，即使 BGM 日历暂时不含该条目，也必须保留未追上进度分组。
+const locallyUncaughtSubject = {
+	id: 900002,
+	name: "Locally Cached Airing Show",
+	name_cn: "本地缓存的在播番",
+	date: "2020-01-01",
+	eps: 12,
+	total_episodes: 12,
+};
+const locallyUncaughtCollection = {
+	subject_id: locallyUncaughtSubject.id,
+	subject: locallyUncaughtSubject,
+	ep_status: 3,
+};
+const withoutLocalAiringSignal = sortCollections(
+	[locallyUncaughtCollection],
+	[],
+	1,
+	new Map([[locallyUncaughtSubject.id, 5]]),
+);
+assert.equal(
+	withoutLocalAiringSignal[0].group,
+	"finished_started",
+	"没有本地在播信号时应复现旧问题，便于锁定回归条件",
+);
+const withLocalV2AiringSignal = sortCollections(
+	[locallyUncaughtCollection],
+	[],
+	1,
+	new Map([[locallyUncaughtSubject.id, 5]]),
+	new Map([[locallyUncaughtSubject.id, { status: "scheduled" }]]),
+);
+assert.equal(
+	withLocalV2AiringSignal[0].group,
+	"airing_not_caught",
+	"本地 v2 在播缓存应在网络返回前保留未追上进度分组",
+);
+
 // 未追上进度组：有已知总集数的条目须优先按兴趣权重排序；未知总集数统一靠后。
 const interestSubjects = [
 	{ id: 910001, name: "Low interest", name_cn: "低兴趣", eps: 12, total_episodes: 12 },
