@@ -1163,6 +1163,7 @@ export default function CollectionsPage() {
 	const isAiringTimeCacheReady =
 		!shouldWaitForAiringTimeCache ||
 		cachedAiringRecordMap !== undefined ||
+		airingRecordMapData !== undefined ||
 		Boolean(cachedAiringTimeError);
 	const collectionsSource = getQuerySourceStatus(
 		querySources,
@@ -1196,37 +1197,40 @@ export default function CollectionsPage() {
 		episodeMap !== undefined,
 		Boolean(episodeError),
 	);
-	const cacheCollectionsData =
+	const hasCollectionsSnapshot =
 		cachedCollectionsSnapshot.key === collectionsCacheKey &&
-		cachedCollectionsSnapshot.complete
-			? cachedCollectionsSnapshot.value
-			: null;
+		cachedCollectionsSnapshot.complete &&
+		cachedCollectionsSnapshot.value !== null;
+	const cacheCollectionsData = hasCollectionsSnapshot
+		? cachedCollectionsSnapshot.value
+		: collData ?? null;
 	const cacheRawCollections = cacheCollectionsData?.data ?? EMPTY_COLLECTIONS;
 	const cacheCalendar = useMemo(
-		() =>
-			isWatching &&
-			cachedCalendarSnapshot.key === "calendar" &&
-			cachedCalendarSnapshot.complete
-				? (cachedCalendarSnapshot.value ?? [])
-				: isWatching
-					? []
-					: undefined,
-		[isWatching, cachedCalendarSnapshot],
+		() => {
+			if (!isWatching) return undefined;
+			if (
+				cachedCalendarSnapshot.key === "calendar" &&
+				cachedCalendarSnapshot.complete
+			) {
+				return cachedCalendarSnapshot.value ?? [];
+			}
+			return calendar ?? [];
+		},
+		[isWatching, cachedCalendarSnapshot, calendar],
 	);
 	const cacheAiringMap = useMemo(
 		() => buildAiringMap(cacheCalendar),
 		[cacheCalendar],
 	);
 	const cacheAiringObservationMap = useMemo(
-		() =>
-			toAiringObservationMap(cachedAiringRecordMap ?? EMPTY_AIRING_RECORD_MAP),
-		[cachedAiringRecordMap],
+		() => toAiringObservationMap(airingRecordMap),
+		[airingRecordMap],
 	);
 	const cacheEpisodeListMap =
 		cachedEpisodeSnapshot.key === episodesQuerySourceKey &&
 		cachedEpisodeSnapshot.value
 			? cachedEpisodeSnapshot.value
-			: EMPTY_EPISODE_LIST_MAP;
+			: episodeMap ?? EMPTY_EPISODE_LIST_MAP;
 	const cacheAiringMetadataIds = useMemo(
 		() =>
 			isWatching
@@ -1307,18 +1311,13 @@ export default function CollectionsPage() {
 			),
 		[cacheSorted, cacheLatestAiringAtMap, nowMs],
 	);
-	const hasCachedCollections =
-		cachedCollectionsSnapshot.key === collectionsCacheKey &&
-		cachedCollectionsSnapshot.complete &&
-		cachedCollectionsSnapshot.value !== null;
+	const hasCachedCollections = hasCollectionsSnapshot || collData !== undefined;
 	const hasCachedAiringMetadata =
 		cacheAiringMetadataIds.length === 0 ||
-		(cachedAiringRecordMap !== undefined &&
-			cacheAiringMetadataIds.every((subjectId) =>
-				cachedAiringRecordMap.has(subjectId),
-			));
+		cacheAiringMetadataIds.every((subjectId) => airingRecordMap.has(subjectId));
 	const hasCachedEpisodes =
 		!shouldLoadEpisodes ||
+		episodeMap !== undefined ||
 		(cachedEpisodeSnapshot.key === episodesQuerySourceKey &&
 			cachedEpisodeSnapshot.complete &&
 			cachedEpisodeSnapshot.value !== null);
@@ -1360,15 +1359,15 @@ export default function CollectionsPage() {
 		"cache",
 		cachedCollectionsSnapshot.key === collectionsCacheKey
 			? cachedCollectionsSnapshot.version
-			: "pending",
+			: collUpdatedAt || "memory",
 		cachedCalendarSnapshot.key === "calendar"
 			? cachedCalendarSnapshot.version
-			: "pending",
+			: calendarUpdatedAt || "memory",
 		cachedEpisodeSnapshot.key === episodesQuerySourceKey
 			? cachedEpisodeSnapshot.version
-			: "pending",
+			: episodeUpdatedAt || "memory",
 		shouldWaitForAiringTimeCache
-			? `airing-cache:${cachedAiringRecordMap !== undefined ? cachedAiringTimeUpdatedAt : cachedAiringTimeError ? "error" : "pending"}`
+			? `airing-cache:${cachedAiringRecordMap !== undefined || airingRecordMapData !== undefined ? cachedAiringTimeUpdatedAt || airingTimeUpdatedAt : cachedAiringTimeError ? "error" : "pending"}`
 			: "skip",
 	].join("|");
 	const committedVersion = [
@@ -1445,8 +1444,21 @@ export default function CollectionsPage() {
 		uname,
 	]);
 
+	const localFallbackState: CommittedCollectionsState | null =
+		canCommitCacheSnapshot
+			? {
+					scopeKey: committedScopeKey,
+					version: cacheCommittedVersion,
+					source: "cache",
+					sorted: cacheSorted,
+					displayLabelMap: cacheDisplayLabelMap,
+					justUpdatedSubjectIds: cacheJustUpdatedSubjectIds,
+				}
+			: null;
 	const activeCommittedState =
-		committedState?.scopeKey === committedScopeKey ? committedState : null;
+		committedState?.scopeKey === committedScopeKey
+			? committedState
+			: localFallbackState;
 	const visibleSorted = activeCommittedState?.sorted ?? EMPTY_SORTED;
 	const visibleDisplayLabelMap =
 		activeCommittedState?.displayLabelMap ?? EMPTY_DISPLAY_LABEL_MAP;
