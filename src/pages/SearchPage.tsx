@@ -42,7 +42,8 @@ export default function SearchPage() {
         limit: SEARCH_PAGE_LIMIT,
         offset: (page - 1) * SEARCH_PAGE_LIMIT,
       });
-      await writeCachedSubjectPreviews(result.data);
+      // 搜索结果先展示，subject 预览缓存放到后台写入。
+      void writeCachedSubjectPreviews(result.data).catch(() => {});
       return result;
     },
     enabled: keyword.length > 0,

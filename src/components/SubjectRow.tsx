@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useState, type ReactNode } from "react";
 import {
   getPreferredSubjectCoverUrl,
+  isUsefulImageUrl,
   readCachedSubject,
 } from "@shared/storage/sqlite-cache";
 import CachedImage from "./CachedImage";
@@ -55,10 +56,14 @@ export const SubjectRow = forwardRef<HTMLDivElement, Props>(function SubjectRow(
     && cachedCover.subjectId === subjectId
     ? cachedCover.coverUrl
     : null;
-  const resolvedCoverUrl = matchingCachedCover ?? coverUrl;
+  // 列表数据通常已经带有可用封面；只有缺失或占位图时才查 SQLite。
+  // 这样标签切换时不会为每一行额外发起一次 subject 查询。
+  const resolvedCoverUrl = isUsefulImageUrl(coverUrl)
+    ? coverUrl
+    : matchingCachedCover;
 
   useEffect(() => {
-    if (!subjectId) return;
+    if (!subjectId || isUsefulImageUrl(coverUrl)) return;
 
     const resolvedSubjectId = subjectId;
 
@@ -77,7 +82,7 @@ export const SubjectRow = forwardRef<HTMLDivElement, Props>(function SubjectRow(
     return () => {
       cancelled = true;
     };
-  }, [subjectId]);
+  }, [coverUrl, subjectId]);
 
   return (
     <div

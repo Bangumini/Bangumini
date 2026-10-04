@@ -1183,6 +1183,13 @@ export async function readCachedImage(
 	}, null);
 }
 
+export async function deleteCachedImage(remoteUrl: string) {
+	if (!remoteUrl) return;
+	await withDatabase(async (db) => {
+		await db.execute("DELETE FROM image_cache WHERE remote_url = $1", [remoteUrl]);
+	}, undefined);
+}
+
 export async function writeCachedImage(record: CachedImageRecord) {
 	await withDatabase(async (db) => {
 		await db.execute(

@@ -205,7 +205,8 @@ async function fetchBangumiMatch(
 
 async function fetchAndCacheNextSeasonBase(nextSeasonBaseCacheKey: string) {
 	const items = filterUpcomingNextSeasonItems(await getNextSeason());
-	await writeCachedValue(nextSeasonBaseCacheKey, items);
+	// 新番数据先展示，基础缓存后台落盘。
+	void writeCachedValue(nextSeasonBaseCacheKey, items).catch(() => {});
 	return items;
 }
 
@@ -241,16 +242,14 @@ async function applyCachedSubjectCovers(entries: SeasonEntry[]) {
 	let changed = false;
 	const resolved = await Promise.all(
 		entries.map(async (entry) => {
-			if (!entry.bangumiId) return entry;
+			// AniList 已提供可用封面时直接使用，避免新番页面首屏逐条查 SQLite。
+			if (!entry.bangumiId || isUsefulImageUrl(entry.cover)) return entry;
 			const subject = await readCachedSubject(entry.bangumiId);
 			const cachedCover = getPreferredSubjectCoverUrl(subject);
 			if (!cachedCover) return entry;
 
-			if (!isUsefulImageUrl(entry.cover) || entry.cover !== cachedCover) {
-				changed = true;
-				return { ...entry, cover: cachedCover };
-			}
-			return entry;
+			changed = true;
+			return { ...entry, cover: cachedCover };
 		}),
 	);
 	return { entries: resolved, changed };
@@ -408,10 +407,11 @@ export default function NextSeasonPage() {
 	} = useQuery({
 		queryKey: nextSeasonQueryKey,
 		queryFn: async () => {
-			await deleteCachedValuesByPrefixExcept(
+			// 清理旧季度缓存不阻塞当前季度首屏读取。
+			void deleteCachedValuesByPrefixExcept(
 				NEXT_SEASON_BASE_CACHE_PREFIX,
 				nextSeasonBaseCacheKey,
-			);
+			).catch(() => {});
 
 			let cachedBase = await readCachedValueEntry<NextSeasonItem[]>(
 				nextSeasonBaseCacheKey,
@@ -485,7 +485,9 @@ export default function NextSeasonPage() {
 				throw err;
 			}
 		},
-		staleTime: 0,
+		// 季度数据有独立 SQLite 缓存，短时间内切标签直接复用内存结果。
+		staleTime: 5 * 60 * 1000,
+		gcTime: 10 * 60 * 1000,
 	});
 
 	const entries = useMemo(() => rawEntries ?? [], [rawEntries]);
@@ -596,15 +598,23 @@ export default function NextSeasonPage() {
 		if (isReturningFromDetail.current) return;
 
 		setFocusedIndex(0);
+		itemRefs.current = [];
 	}, [currentDay, filterText, filterWeekday]);
 
-	// Scroll focused item into view
+	// 首次切换到页面或切换日期时不要播放无意义的滚动动画；
+	// 键盘移动焦点时再平滑滚动。
+	const scrollScope = `${currentDay}:${filterText}:${filterWeekday}`;
+	const initialScrollScopeRef = useRef<string | null>(null);
 	useEffect(() => {
 		const item = itemRefs.current[focusedIndex];
-		if (item) {
-			item.scrollIntoView({ behavior: "smooth", block: "center" });
-		}
-	}, [focusedIndex]);
+		if (!item) return;
+		const isInitialScroll = initialScrollScopeRef.current !== scrollScope;
+		initialScrollScopeRef.current = scrollScope;
+		item.scrollIntoView({
+			behavior: isInitialScroll ? "auto" : "smooth",
+			block: isInitialScroll ? "nearest" : "center",
+		});
+	}, [focusedIndex, currentItems.length, scrollScope]);
 
 	// Keyboard navigation
 	useKeyboardShortcuts(

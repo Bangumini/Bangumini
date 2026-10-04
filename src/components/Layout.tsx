@@ -489,7 +489,7 @@ export default function Layout() {
 	return (
 		<div className="h-screen flex text-fg overflow-hidden">
 			<aside
-				className={`shrink-0 flex flex-col bg-panel border-r border-line transition-all duration-150 ease-in-out ${
+				className={`shrink-0 flex flex-col bg-panel border-r border-line transition-[width] duration-150 ease-out ${
 					collapsed ? "w-[60px]" : "w-[196px]"
 				}`}
 			>
@@ -514,7 +514,7 @@ export default function Layout() {
 								key={tab.path}
 								onClick={() => navigate({ pathname: tab.path, search: "" })}
 								title={collapsed ? tab.label : undefined}
-								className={`group relative w-full flex items-center gap-3 px-2.5 py-2 rounded-md text-[13px] transition-colors ${
+								className={`group relative w-full flex items-center gap-3 px-2.5 py-2 rounded-md text-[13px] transition-colors duration-100 ease-out ${
 									active
 										? "bg-selected text-fg"
 										: "text-fg-secondary hover:bg-hover hover:text-fg"

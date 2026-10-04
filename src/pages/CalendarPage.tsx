@@ -32,8 +32,11 @@ type CalendarLocationState = {
 
 async function fetchAndCacheCalendar() {
 	const data = await getCalendar();
-	await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
-	await writeCachedValue("calendar", data);
+	// 缓存持久化放到后台，避免切换到日历时等待几十条 subject 写入完成。
+	void Promise.all([
+		writeCachedSubjectPreviews(data.flatMap((day) => day.items)),
+		writeCachedValue("calendar", data),
+	]).catch(() => {});
 	return data;
 }
 
@@ -101,8 +104,9 @@ export default function CalendarPage() {
 				throw err;
 			}
 		},
-		staleTime: 0,
-		refetchOnWindowFocus: "always",
+		staleTime: 30_000,
+		gcTime: 10 * 60 * 1000,
+		refetchOnWindowFocus: true,
 	});
 
 	// Build flat list of all items with their weekday context
@@ -172,13 +176,20 @@ export default function CalendarPage() {
 		itemRefs.current = [];
 	}, [currentDay, filterText, filterWeekday]);
 
-	// Scroll focused item into view, centered
+	// 首次切换到页面或切换日期时不要播放无意义的滚动动画；
+	// 键盘移动焦点时再平滑滚动。
+	const scrollScope = `${currentDay}:${filterText}:${filterWeekday}`;
+	const initialScrollScopeRef = useRef<string | null>(null);
 	useEffect(() => {
 		const item = itemRefs.current[focusedIndex];
-		if (item) {
-			item.scrollIntoView({ behavior: "smooth", block: "center" });
-		}
-	}, [focusedIndex]);
+		if (!item) return;
+		const isInitialScroll = initialScrollScopeRef.current !== scrollScope;
+		initialScrollScopeRef.current = scrollScope;
+		item.scrollIntoView({
+			behavior: isInitialScroll ? "auto" : "smooth",
+			block: isInitialScroll ? "nearest" : "center",
+		});
+	}, [focusedIndex, scrollScope]);
 
 	// Keyboard navigation
 	useKeyboardShortcuts(

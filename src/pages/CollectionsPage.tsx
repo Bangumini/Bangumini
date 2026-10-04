@@ -41,7 +41,6 @@ import {
 	deleteCachedValuesByPrefix,
 	readCachedCollection,
 	readCachedSubjectDeep,
-	readCachedValue,
 	readCachedValueEntry,
 	readCachedValues,
 	readCachedValueWithLegacy,
@@ -421,20 +420,33 @@ async function fetchAndCacheCollections(
 					limit: 100,
 				});
 
-	await backfillTotalEpisodesFromCache(result.data);
-	await writeCachedSubjectPreviews(result.data.map((item) => item.subject));
-	await writeCachedValue(collectionsCacheKey, result);
-	// 同步写入单条目收藏缓存，确保详情页读到最新数据
-	await Promise.all(
-		result.data.map((item) => writeCachedCollection(uname, item)),
-	);
+	// 网络结果先交给列表；总集数回填和缓存持久化都在后台执行。
+	const cacheResult = {
+		...result,
+		data: result.data.map((item) => ({
+			...item,
+			subject: { ...item.subject },
+		})),
+	};
+	void (async () => {
+		await backfillTotalEpisodesFromCache(cacheResult.data);
+		await Promise.all([
+			writeCachedSubjectPreviews(cacheResult.data.map((item) => item.subject)),
+			writeCachedValue(collectionsCacheKey, cacheResult),
+			// 同步写入单条目收藏缓存，确保详情页读到最新数据
+			Promise.all(cacheResult.data.map((item) => writeCachedCollection(uname, item))),
+		]);
+	})().catch(() => {});
 	return result;
 }
 
 async function fetchAndCacheCalendar() {
 	const data = await getCalendar();
-	await writeCachedSubjectPreviews(data.flatMap((day) => day.items));
-	await writeCachedValue("calendar", data);
+	// 缓存持久化放到后台，避免切换到日历时等待几十条 subject 写入完成。
+	void Promise.all([
+		writeCachedSubjectPreviews(data.flatMap((day) => day.items)),
+		writeCachedValue("calendar", data),
+	]).catch(() => {});
 	return data;
 }
 
@@ -695,13 +707,38 @@ export default function CollectionsPage() {
 				);
 			if (cached) {
 				setQuerySource("collections", collectionsCacheKey, "cache");
-				await backfillTotalEpisodesFromCache(cached.payload.data);
 				setCachedCollectionsSnapshot({
 					key: collectionsCacheKey,
 					value: cached.payload,
 					version: cached.updatedAt,
 					complete: true,
 				});
+
+				// 先显示已有收藏；缺失的总集数只作为后台增强信息读取，
+				// 不再阻塞标签切换后的首帧。
+				const hydrationTarget = {
+					...cached.payload,
+					data: cached.payload.data.map((item) => ({
+						...item,
+						subject: { ...item.subject },
+					})),
+				};
+				void backfillTotalEpisodesFromCache(hydrationTarget.data)
+					.then(() => {
+						const currentData = queryClient.getQueryData<
+							PagedResponse<UserCollection>
+						>(collectionsQueryKey);
+						if (currentData !== cached.payload) return;
+						queryClient.setQueryData(collectionsQueryKey, hydrationTarget);
+						setCachedCollectionsSnapshot((previous) =>
+							previous.key === collectionsCacheKey &&
+							previous.value === cached.payload
+								? { ...previous, value: hydrationTarget }
+								: previous,
+						);
+					})
+					.catch(() => {});
+
 				const refreshTask = refreshQueryDataIfChanged({
 					queryClient,
 					queryKey: collectionsQueryKey,
@@ -752,8 +789,10 @@ export default function CollectionsPage() {
 			}
 		},
 		enabled: !!uname,
-		staleTime: 0,
-		refetchOnWindowFocus: "always",
+		// 自定义 stale-while-revalidate 已负责刷新；短窗口内切标签直接复用内存数据。
+		staleTime: 30_000,
+		gcTime: 10 * 60 * 1000,
+		refetchOnWindowFocus: true,
 		refetchOnMount: shouldSuppressRefetch ? false : true,
 	});
 
@@ -819,8 +858,9 @@ export default function CollectionsPage() {
 			}
 		},
 		enabled: isWatching,
-		staleTime: 0,
-		refetchOnWindowFocus: "always",
+		staleTime: 30_000,
+		gcTime: 10 * 60 * 1000,
+		refetchOnWindowFocus: true,
 		refetchOnMount: shouldSuppressRefetch ? false : true,
 	});
 
@@ -848,7 +888,7 @@ export default function CollectionsPage() {
 		queryFn: () => readCachedAiringRecords(airingTimeCacheIds),
 		enabled: shouldReadAiringTimeCache,
 		staleTime: 5 * 60 * 1000,
-		refetchOnWindowFocus: "always",
+		refetchOnWindowFocus: true,
 		refetchOnMount: shouldSuppressRefetch ? false : true,
 	});
 
@@ -953,7 +993,7 @@ export default function CollectionsPage() {
 		},
 		enabled: shouldLoadAiringTimes && cachedAiringTimeFetched,
 		staleTime: 5 * 60 * 1000,
-		refetchOnWindowFocus: "always",
+		refetchOnWindowFocus: true,
 		refetchOnMount: shouldSuppressRefetch ? false : true,
 	});
 
@@ -996,11 +1036,13 @@ export default function CollectionsPage() {
 			const map = new Map<number, Episode[]>();
 			const cachedBySubjectId = new Map<number, EpisodeScheduleCache>();
 			const idsToFetch: number[] = [];
+			// 一次读取所有剧集缓存，避免切换标签时为每个条目单独进行 IPC/SQLite 查询。
+			const cachedByKey = await readCachedValues<EpisodeScheduleCache>(
+				allEpisodeIds.map(getEpisodeCacheKey),
+			);
 
 			for (const id of allEpisodeIds) {
-				const cached = await readCachedValue<EpisodeScheduleCache>(
-					getEpisodeCacheKey(id),
-				);
+				const cached = cachedByKey.get(getEpisodeCacheKey(id)) ?? null;
 				if (isEpisodeScheduleCache(cached)) {
 					cachedBySubjectId.set(id, cached);
 					if (now - cached.checkedAt <= EPISODES_CACHE_MAX_AGE) {
@@ -1062,7 +1104,7 @@ export default function CollectionsPage() {
 		},
 		enabled: shouldLoadEpisodes,
 		staleTime: EPISODES_CACHE_MAX_AGE,
-		refetchOnWindowFocus: "always",
+		refetchOnWindowFocus: true,
 		refetchOnMount: shouldSuppressRefetch ? false : true,
 	});
 
@@ -1231,22 +1273,7 @@ export default function CollectionsPage() {
 		cachedEpisodeSnapshot.value
 			? cachedEpisodeSnapshot.value
 			: episodeMap ?? EMPTY_EPISODE_LIST_MAP;
-	const cacheAiringMetadataIds = useMemo(
-		() =>
-			isWatching
-				? cacheRawCollections
-						.filter((item) => {
-							const total =
-								item.subject.total_episodes || item.subject.eps || 0;
-							return (
-								(total === 0 || item.ep_status < total) &&
-								!cacheAiringMap.has(item.subject_id)
-							);
-						})
-						.map((item) => item.subject_id)
-				: [],
-		[cacheRawCollections, cacheAiringMap, isWatching],
-	);
+
 	const cacheDerivedAiringData = useMemo(
 		() =>
 			deriveAiringMaps(
@@ -1312,15 +1339,7 @@ export default function CollectionsPage() {
 		[cacheSorted, cacheLatestAiringAtMap, nowMs],
 	);
 	const hasCachedCollections = hasCollectionsSnapshot || collData !== undefined;
-	const hasCachedAiringMetadata =
-		cacheAiringMetadataIds.length === 0 ||
-		cacheAiringMetadataIds.every((subjectId) => airingRecordMap.has(subjectId));
-	const hasCachedEpisodes =
-		!shouldLoadEpisodes ||
-		episodeMap !== undefined ||
-		(cachedEpisodeSnapshot.key === episodesQuerySourceKey &&
-			cachedEpisodeSnapshot.complete &&
-			cachedEpisodeSnapshot.value !== null);
+	// 播出时间和剧集是列表的渐进式增强信息，不应阻塞收藏列表首帧。
 	const isDisplayDataAvailable =
 		Boolean(uname) &&
 		collData !== undefined &&
@@ -1338,12 +1357,7 @@ export default function CollectionsPage() {
 		(!shouldWaitForEpisodes || !isEpisodeFetching);
 	const isDisplayReady =
 		Boolean(uname) && isDisplayDataAvailable && isDisplayNetworkIdle;
-	const canCommitCacheSnapshot =
-		Boolean(uname) &&
-		hasCachedCollections &&
-		hasCachedAiringMetadata &&
-		hasCachedEpisodes &&
-		isAiringTimeCacheReady;
+	const canCommitCacheSnapshot = Boolean(uname) && hasCachedCollections;
 	const committedSource: DataSource = hasNetworkSource([
 		collectionsSource,
 		shouldWaitForCalendar ? calendarSource : "skip",
@@ -1549,15 +1563,20 @@ export default function CollectionsPage() {
 		searchText,
 	]);
 
-	const scrollKey = `${page}-${focusedIndex}-${paged.length}`;
-
-	// Scroll focused item into view, centered
+	// 首次切换到页面或数据页变化时不要播放无意义的滚动动画；
+	// 键盘移动焦点时再平滑滚动。
+	const scrollScope = `${collectionType}:${searchText}:${page}`;
+	const initialScrollScopeRef = useRef<string | null>(null);
 	useEffect(() => {
 		const item = itemRefs.current[focusedIndex];
-		if (item) {
-			item.scrollIntoView({ behavior: "smooth", block: "center" });
-		}
-	}, [focusedIndex, scrollKey]);
+		if (!item) return;
+		const isInitialScroll = initialScrollScopeRef.current !== scrollScope;
+		initialScrollScopeRef.current = scrollScope;
+		item.scrollIntoView({
+			behavior: isInitialScroll ? "auto" : "smooth",
+			block: isInitialScroll ? "nearest" : "center",
+		});
+	}, [focusedIndex, paged.length, page, scrollScope]);
 
 	function openSubject(subjectId: number) {
 		writePageState(collectionType, searchText, page, focusedIndex);
