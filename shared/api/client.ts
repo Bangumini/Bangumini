@@ -4,6 +4,7 @@ const BASE_URL = "https://api.bgm.tv";
 
 let tokenProvider: (() => Promise<string>) | null = null;
 let fetchFn: typeof fetch = fetch;
+let authInvalidationHandler: (() => void) | null = null;
 
 export function setFetchFunction(fn: typeof fetch) {
   fetchFn = fn;
@@ -11,6 +12,18 @@ export function setFetchFunction(fn: typeof fetch) {
 
 export function setTokenProvider(fn: () => Promise<string>) {
   tokenProvider = fn;
+}
+
+export function setAuthInvalidationHandler(handler: (() => void) | null) {
+  authInvalidationHandler = handler;
+}
+
+function notifyAuthInvalidated() {
+  try {
+    authInvalidationHandler?.();
+  } catch {
+    // 认证状态处理失败时仍保留原始 API 错误。
+  }
 }
 
 declare const __APP_VERSION__: string;
@@ -53,6 +66,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const body = await res.text();
+    if (res.status === 401) {
+      notifyAuthInvalidated();
+    }
     throw new Error(`Bangumi API error ${res.status}: ${body}`);
   }
 

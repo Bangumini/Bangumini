@@ -46,7 +46,11 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
           localStorage.setItem("bangumi_refresh_token", result.refresh_token);
         }
         if (result.expires_at) {
-          localStorage.setItem("bangumi_expires_at", String(result.expires_at));
+          // Rust OAuth 回调返回 Unix 秒，前端统一按毫秒保存。
+          localStorage.setItem(
+            "bangumi_expires_at",
+            String(result.expires_at * 1000),
+          );
         }
         onLogin();
       } else {

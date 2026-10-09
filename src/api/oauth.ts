@@ -5,6 +5,8 @@ const REFRESH_KEY = "bangumi_refresh_token";
 const EXPIRY_KEY = "bangumi_expires_at";
 const USERNAME_KEY = "bangumi_username";
 
+export const AUTH_INVALIDATED_EVENT = "bangumini:auth-invalidated";
+
 const CLIENT_ID = "bgm61886a103fe0672c1";
 const CLIENT_SECRET = "32468c5f6ba84e3528d11bd4905f1726";
 const TOKEN_URL = "https://bgm.tv/oauth/access_token";
@@ -16,13 +18,30 @@ export function isLoggedIn(): boolean {
   return !!localStorage.getItem(TOKEN_KEY);
 }
 
+function getExpiryTimestampMs(rawExpiry: string | null): number | null {
+  if (!rawExpiry) return null;
+  const expiry = Number(rawExpiry);
+  if (!Number.isFinite(expiry) || expiry <= 0) return null;
+
+  // OAuth 回调返回 Unix 秒，刷新接口返回的 expires_at 使用毫秒；兼容两种格式。
+  return expiry < 1_000_000_000_000 ? expiry * 1000 : expiry;
+}
+
+function notifyAuthInvalidated() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_INVALIDATED_EVENT));
+  }
+}
+
 export async function getAccessToken(): Promise<string> {
-  // Check if token is expired and try to refresh
-  const expiry = localStorage.getItem(EXPIRY_KEY);
-  if (expiry && Date.now() > Number(expiry)) {
+  const expiry = getExpiryTimestampMs(localStorage.getItem(EXPIRY_KEY));
+  if (expiry !== null && Date.now() >= expiry) {
     const refreshed = await refreshAccessToken();
     if (refreshed) return refreshed;
-    // Refresh failed — token may still work, return it anyway
+
+    // 已知 token 过期且刷新失败时，不能继续发送旧 token。
+    clearToken();
+    throw new Error("Authentication expired");
   }
 
   const token = localStorage.getItem(TOKEN_KEY);
@@ -36,6 +55,9 @@ export function getUsername(): string {
 
 export function setToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token);
+  // 手动替换 token 时不能沿用旧 OAuth token 的刷新信息。
+  localStorage.removeItem(REFRESH_KEY);
+  localStorage.removeItem(EXPIRY_KEY);
 }
 
 export function clearToken() {
@@ -43,11 +65,17 @@ export function clearToken() {
   localStorage.removeItem(REFRESH_KEY);
   localStorage.removeItem(EXPIRY_KEY);
   localStorage.removeItem(USERNAME_KEY);
+  notifyAuthInvalidated();
 }
 
 export async function fetchAndCacheUsername(): Promise<string> {
-  const token = localStorage.getItem(TOKEN_KEY);
-  if (!token) return "";
+  let token: string;
+  try {
+    token = await getAccessToken();
+  } catch {
+    return "";
+  }
+
   try {
     const res = await fetchFn("https://api.bgm.tv/v0/me", {
       headers: {
@@ -55,6 +83,10 @@ export async function fetchAndCacheUsername(): Promise<string> {
         "User-Agent": "Bangumini/0.1",
       },
     });
+    if (res.status === 401) {
+      clearToken();
+      return "";
+    }
     if (res.ok) {
       const data = (await res.json()) as { username: string };
       if (data.username) {

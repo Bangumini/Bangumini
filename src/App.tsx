@@ -2,8 +2,16 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { setTokenProvider } from "@shared/api/client";
-import { getAccessToken, fetchAndCacheUsername } from "./api/oauth";
+import {
+  setAuthInvalidationHandler,
+  setTokenProvider,
+} from "@shared/api/client";
+import {
+  AUTH_INVALIDATED_EVENT,
+  clearToken,
+  getAccessToken,
+  fetchAndCacheUsername,
+} from "./api/oauth";
 import { useAuth } from "./hooks/useAuth";
 import { isTauri } from "./api/tauri-fetch";
 import { DEFAULT_SHORTCUT, loadStoredShortcut } from "./api/shortcut";
@@ -19,6 +27,7 @@ import LoginPage from "./pages/LoginPage";
 import SettingsPage from "./pages/SettingsPage";
 
 setTokenProvider(getAccessToken);
+setAuthInvalidationHandler(clearToken);
 
 function RequireAuth() {
   const { authenticated } = useAuth();
@@ -37,6 +46,13 @@ export default function App() {
       fetchAndCacheUsername().catch(() => {});
     }
   }, [authenticated]);
+
+  useEffect(() => {
+    const clearQueryCache = () => queryClient.clear();
+    window.addEventListener(AUTH_INVALIDATED_EVENT, clearQueryCache);
+    return () =>
+      window.removeEventListener(AUTH_INVALIDATED_EVENT, clearQueryCache);
+  }, [queryClient]);
 
   useEffect(() => {
     if (authenticated) {

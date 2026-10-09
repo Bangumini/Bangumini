@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import { isLoggedIn } from "./oauth";
 import {
 	getEpisodes,
 	getUserCollection,
@@ -424,6 +425,8 @@ async function scheduleNextWorkerRun() {
 		retryTimer = null;
 	}
 
+	if (!isLoggedIn()) return;
+
 	const nextRunAt = await readNextPersistentCollectionTaskRunAt();
 	if (nextRunAt === null) return;
 
@@ -524,11 +527,11 @@ export function getCollectionTaskSummary(task: CollectionTask) {
 }
 
 export async function kickCollectionTaskWorker() {
-	if (workerRunning) return;
+	if (!isLoggedIn() || workerRunning) return;
 	workerRunning = true;
 
 	try {
-		while (true) {
+		while (isLoggedIn()) {
 			const dueTask = await readDuePersistentCollectionTask();
 			const task = dueTask ? asCollectionTask(dueTask) : null;
 			if (!task) {
