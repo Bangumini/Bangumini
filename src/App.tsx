@@ -25,6 +25,7 @@ import SubjectDetailPage from "./pages/SubjectDetailPage";
 import NextSeasonPage from "./pages/NextSeasonPage";
 import LoginPage from "./pages/LoginPage";
 import SettingsPage from "./pages/SettingsPage";
+import WindowPinToggle from "./components/WindowPinToggle";
 
 setTokenProvider(getAccessToken);
 setAuthInvalidationHandler(clearToken);
@@ -89,21 +90,31 @@ export default function App() {
   }
 
   return (
-    <Routes>
-      <Route path="/login" element={
-        authenticated ? <Navigate to="/collections" replace /> : <LoginPage onLogin={handleLogin} />
-      } />
-      <Route element={<RequireAuth />}>
-        <Route element={<Layout />}>
-          <Route path="/" element={<Navigate to="/collections" replace />} />
-          <Route path="/search" element={<SearchPage />} />
-          <Route path="/calendar" element={<CalendarPage />} />
-          <Route path="/collections" element={<CollectionsPage />} />
-          <Route path="/next-season" element={<NextSeasonPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
+    <>
+      <WindowPinToggle />
+      <Routes>
+        <Route
+          path="/login"
+          element={
+            authenticated ? (
+              <Navigate to="/collections" replace />
+            ) : (
+              <LoginPage onLogin={handleLogin} />
+            )
+          }
+        />
+        <Route element={<RequireAuth />}>
+          <Route element={<Layout />}>
+            <Route path="/" element={<Navigate to="/collections" replace />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="/calendar" element={<CalendarPage />} />
+            <Route path="/collections" element={<CollectionsPage />} />
+            <Route path="/next-season" element={<NextSeasonPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Route>
+          <Route path="/subject/:id" element={<SubjectDetailPage />} />
         </Route>
-        <Route path="/subject/:id" element={<SubjectDetailPage />} />
-      </Route>
-    </Routes>
+      </Routes>
+    </>
   );
 }
