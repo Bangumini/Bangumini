@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	COLLECTION_TASK_QUEUE_EVENT,
@@ -23,7 +24,7 @@ function getTaskStatusLabel(task: CollectionTask) {
 	return "等待同步";
 }
 
-function SyncIcon() {
+function SyncIcon({ spinning = false }: { spinning?: boolean }) {
 	return (
 		<svg
 			width="16"
@@ -34,7 +35,7 @@ function SyncIcon() {
 			strokeWidth="1.6"
 			strokeLinecap="round"
 			strokeLinejoin="round"
-			className="animate-spin"
+			className={spinning ? "animate-spin" : undefined}
 		>
 			<path d="M21 12a9 9 0 0 1-13.34 7.61M3 12a9 9 0 0 1 13.34-7.61" />
 			<path d="m20 4v4h-4M4 20v-4h4" />
@@ -132,6 +133,83 @@ function CheckIcon() {
 
 const TASK_LIST_MAX_HEIGHT = 320;
 
+type ErrorTooltipPosition = {
+	left: number;
+	top: number;
+	placement: "above" | "below";
+};
+
+function getErrorTooltipPosition(rect: DOMRect): ErrorTooltipPosition {
+	const tooltipWidth = Math.min(320, Math.max(0, window.innerWidth - 32));
+	const maxLeft = Math.max(16, window.innerWidth - tooltipWidth - 16);
+	const placement = rect.top > 180 ? "above" : "below";
+
+	return {
+		left: Math.min(Math.max(16, rect.left), maxLeft),
+		top: placement === "above" ? rect.top - 8 : rect.bottom + 8,
+		placement,
+	};
+}
+
+function TaskErrorMessage({ message }: { message: string }) {
+	const [tooltipPosition, setTooltipPosition] =
+		useState<ErrorTooltipPosition | null>(null);
+	const messageRef = useRef<HTMLParagraphElement>(null);
+
+	const updateTooltipPosition = useCallback(() => {
+		const element = messageRef.current;
+		if (!element) return;
+		setTooltipPosition(getErrorTooltipPosition(element.getBoundingClientRect()));
+	}, []);
+
+	useEffect(() => {
+		if (!tooltipPosition) return;
+
+		const handleViewportChange = () => updateTooltipPosition();
+		window.addEventListener("resize", handleViewportChange);
+		window.addEventListener("scroll", handleViewportChange, true);
+		return () => {
+			window.removeEventListener("resize", handleViewportChange);
+			window.removeEventListener("scroll", handleViewportChange, true);
+		};
+	}, [tooltipPosition, updateTooltipPosition]);
+
+	return (
+		<>
+			<p
+				ref={messageRef}
+				tabIndex={0}
+				className="text-[11px] line-clamp-2 break-words text-danger cursor-help"
+				onMouseEnter={updateTooltipPosition}
+				onMouseLeave={() => setTooltipPosition(null)}
+				onFocus={updateTooltipPosition}
+				onBlur={() => setTooltipPosition(null)}
+				aria-label={`同步失败: ${message}`}
+			>
+				同步失败: {message}
+			</p>
+			{tooltipPosition &&
+				createPortal(
+					<div
+						role="tooltip"
+						className="pointer-events-none fixed z-[60] w-80 max-w-[calc(100vw-2rem)] max-h-96 overflow-y-auto rounded-lg border border-line-strong bg-elevated px-3 py-2 text-[11px] leading-relaxed text-fg shadow-pop whitespace-pre-wrap break-words"
+						style={{
+							left: tooltipPosition.left,
+							top: tooltipPosition.top,
+							transform:
+								tooltipPosition.placement === "above"
+									? "translateY(-100%)"
+									: undefined,
+						}}
+					>
+						{message}
+					</div>,
+					document.body,
+				)}
+		</>
+	);
+}
+
 export default function SyncQueueDock() {
 	const [tasks, setTasks] = useState<CollectionTask[]>([]);
 	const [expanded, setExpanded] = useState(false);
@@ -206,7 +284,7 @@ export default function SyncQueueDock() {
 		first.status === "failed" ? (
 			<AlertCircleIcon />
 		) : first.status === "running" ? (
-			<SyncIcon />
+			<SyncIcon spinning />
 		) : (
 			<ClockIcon />
 		);
@@ -245,7 +323,7 @@ export default function SyncQueueDock() {
 
 				{expanded && (
 					<div
-						className="w-80 bg-elevated rounded-xl border border-line-strong shadow-pop overflow-hidden"
+						className="relative z-50 w-80 bg-elevated rounded-xl border border-line-strong shadow-pop overflow-hidden"
 						onMouseDown={(e) => e.stopPropagation()}
 					>
 						<div className="flex items-center justify-between px-4 pt-3 pb-2">
@@ -269,7 +347,7 @@ export default function SyncQueueDock() {
 									task.status === "failed" ? (
 										<AlertCircleIcon />
 									) : task.status === "running" ? (
-										<SyncIcon />
+										<SyncIcon spinning />
 									) : (
 										<ClockIcon />
 									);
@@ -289,13 +367,15 @@ export default function SyncQueueDock() {
 											<p className="text-[12px] text-fg font-medium truncate">
 												{getCollectionTaskSummary(task)}
 											</p>
-											<p
-												className={`text-[11px] line-clamp-2 break-words ${task.status === "failed" ? "text-danger" : "text-fg-tertiary"}`}
-											>
-												{task.status === "failed" && task.lastError
-													? `同步失败: ${task.lastError}`
-													: getTaskStatusLabel(task)}
-											</p>
+											{task.status === "failed" && task.lastError ? (
+												<TaskErrorMessage message={task.lastError} />
+											) : (
+												<p
+													className={`text-[11px] line-clamp-2 break-words ${task.status === "failed" ? "text-danger" : "text-fg-tertiary"}`}
+												>
+													{getTaskStatusLabel(task)}
+												</p>
+											)}
 										</div>
 
 										{task.status === "failed" && (
