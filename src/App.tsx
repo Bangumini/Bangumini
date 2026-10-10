@@ -8,10 +8,11 @@ import {
 } from "@shared/api/client";
 import {
   AUTH_INVALIDATED_EVENT,
-  clearToken,
   getAccessToken,
   fetchAndCacheUsername,
+  handleAuthInvalidated,
 } from "./api/oauth";
+import { recordAuthEvent } from "./api/auth-diagnostics";
 import { useAuth } from "./hooks/useAuth";
 import { isTauri } from "./api/tauri-fetch";
 import { DEFAULT_SHORTCUT, loadStoredShortcut } from "./api/shortcut";
@@ -27,7 +28,7 @@ import LoginPage from "./pages/LoginPage";
 import SettingsPage from "./pages/SettingsPage";
 
 setTokenProvider(getAccessToken);
-setAuthInvalidationHandler(clearToken);
+setAuthInvalidationHandler(handleAuthInvalidated);
 
 function RequireAuth() {
   const { authenticated } = useAuth();
@@ -39,6 +40,14 @@ function RequireAuth() {
 
 export default function App() {
   const { authLoading, authenticated, handleLogin } = useAuth();
+
+  useEffect(() => {
+    recordAuthEvent("session.started", {
+      hasToken: Boolean(localStorage.getItem("bangumi_token")),
+      hasRefreshToken: Boolean(localStorage.getItem("bangumi_refresh_token")),
+      hasExpiresAt: Boolean(localStorage.getItem("bangumi_expires_at")),
+    });
+  }, []);
   const queryClient = useQueryClient();
 
   useEffect(() => {

@@ -4,7 +4,9 @@ const BASE_URL = "https://api.bgm.tv";
 
 let tokenProvider: (() => Promise<string>) | null = null;
 let fetchFn: typeof fetch = fetch;
-let authInvalidationHandler: (() => void) | null = null;
+let authInvalidationHandler:
+  | ((rejectedToken?: string) => boolean | Promise<boolean>)
+  | null = null;
 
 export function setFetchFunction(fn: typeof fetch) {
   fetchFn = fn;
@@ -14,15 +16,20 @@ export function setTokenProvider(fn: () => Promise<string>) {
   tokenProvider = fn;
 }
 
-export function setAuthInvalidationHandler(handler: (() => void) | null) {
+export function setAuthInvalidationHandler(
+  handler:
+    | ((rejectedToken?: string) => boolean | Promise<boolean>)
+    | null,
+) {
   authInvalidationHandler = handler;
 }
 
-function notifyAuthInvalidated() {
+async function notifyAuthInvalidated(rejectedToken?: string): Promise<boolean> {
   try {
-    authInvalidationHandler?.();
+    return (await authInvalidationHandler?.(rejectedToken)) ?? false;
   } catch {
     // 认证状态处理失败时仍保留原始 API 错误。
+    return false;
   }
 }
 
@@ -59,22 +66,35 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Prom
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${BASE_URL}${path}`;
-  const authHeaders = await getAuthHeaders();
-  const headers = { ...authHeaders, ...(options.headers || {}) };
+  let authRetried = false;
 
-  const res = await fetchWithRetry(url, { ...options, headers });
+  while (true) {
+    const authHeaders = await getAuthHeaders();
+    const headers = { ...authHeaders, ...(options.headers || {}) };
+    const res = await fetchWithRetry(url, { ...options, headers });
 
-  if (!res.ok) {
-    const body = await res.text();
-    if (res.status === 401) {
-      notifyAuthInvalidated();
+    if (!res.ok) {
+      const body = await res.text();
+      if (
+        res.status === 401 &&
+        !authRetried &&
+        authInvalidationHandler &&
+        (await notifyAuthInvalidated(
+          authHeaders.Authorization?.startsWith("Bearer ")
+            ? authHeaders.Authorization.slice("Bearer ".length)
+            : undefined,
+        ))
+      ) {
+        authRetried = true;
+        continue;
+      }
+      throw new Error(`Bangumi API error ${res.status}: ${body}`);
     }
-    throw new Error(`Bangumi API error ${res.status}: ${body}`);
-  }
 
-  const text = await res.text();
-  if (!text) return undefined as T;
-  return JSON.parse(text) as T;
+    const text = await res.text();
+    if (!text) return undefined as T;
+    return JSON.parse(text) as T;
+  }
 }
 
 /** Search Bangumi for an anime subject by name, returns first match */

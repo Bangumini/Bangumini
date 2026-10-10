@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { setToken } from "../api/oauth";
+import { recordAuthEvent } from "../api/auth-diagnostics";
 import ProxySettingsModal from "../components/ProxySettingsModal";
 
 export default function LoginPage({ onLogin }: { onLogin: () => void }) {
@@ -15,21 +16,13 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
   }
 
   async function handleOAuthLogin() {
-    console.log("[OAuth] Button clicked, starting flow...");
+    recordAuthEvent("oauth.started", {});
     setLoading(true);
     try {
-      console.log("[OAuth] Importing Tauri API...");
       const { invoke } = await import("@tauri-apps/api/core");
-      console.log("[OAuth] Tauri API imported successfully");
+      const { state } = await invoke<{ state: string }>("start_oauth");
 
-      console.log("[OAuth] Calling start_oauth...");
-      const startResult = await invoke<{ state: string }>("start_oauth");
-      console.log("[OAuth] start_oauth returned:", startResult);
-      const { state } = startResult;
-      console.log("[OAuth] OAuth started with state:", state);
-
-      // Step 2: Wait for callback
-      console.log("[OAuth] Waiting for callback...");
+      // 等待浏览器回调，不记录包含凭据的完整响应。
       const result = await invoke<{
         success: boolean;
         error?: string;
@@ -38,7 +31,12 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
         expires_at?: number;
       }>("wait_oauth_callback", { expectedState: state });
 
-      console.log("[OAuth] Callback result:", result);
+      recordAuthEvent("oauth.callback_received", {
+        success: result.success,
+        hasAccessToken: Boolean(result.access_token),
+        hasRefreshToken: Boolean(result.refresh_token),
+        hasExpiresAt: typeof result.expires_at === "number",
+      });
 
       if (result.success && result.access_token) {
         setToken(result.access_token);
@@ -52,15 +50,19 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
             String(result.expires_at * 1000),
           );
         }
+        recordAuthEvent("credentials.persisted", {
+          hasToken: Boolean(localStorage.getItem("bangumi_token")),
+          hasRefreshToken: Boolean(localStorage.getItem("bangumi_refresh_token")),
+          hasExpiresAt: Boolean(localStorage.getItem("bangumi_expires_at")),
+        });
         onLogin();
       } else {
         alert("授权失败: " + (result.error ?? "未知错误"));
       }
     } catch (e) {
-      console.error("[OAuth] Error caught:", e);
+      recordAuthEvent("oauth.failed", {});
       alert("OAuth 出错: " + String(e));
     } finally {
-      console.log("[OAuth] Flow finished, resetting loading state");
       setLoading(false);
     }
   }

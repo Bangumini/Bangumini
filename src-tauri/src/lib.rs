@@ -9,6 +9,8 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::Manager;
+mod auth_diagnostics;
+use auth_diagnostics::record_auth_event;
 use tauri_plugin_global_shortcut::{
     GlobalShortcutExt, Shortcut, ShortcutState as GsShortcutState,
 };
@@ -16,7 +18,7 @@ use tauri_plugin_global_shortcut::{
 #[cfg(windows)]
 mod hotkey_recorder;
 use tauri_plugin_opener::OpenerExt;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
@@ -302,8 +304,13 @@ struct AuthUrlResult {
     state: String,
 }
 
+struct OAuthListeners {
+    ipv4: TcpListener,
+    ipv6: TcpListener,
+}
+
 struct OAuthState {
-    listener: Option<TcpListener>,
+    listeners: Option<OAuthListeners>,
 }
 
 #[derive(serde::Serialize)]
@@ -424,31 +431,32 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<AuthUrlResult, String> {
     let state: String = format!("{:x}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
 
-    println!("[OAuth] Starting OAuth flow");
-
-    // Start server FIRST to avoid race condition
-    let listener = TcpListener::bind("127.0.0.1:19840").await.map_err(|e| {
-        println!("[OAuth] Failed to bind listener: {}", e);
+    // 先启动回调服务，避免浏览器重定向时发生竞态。localhost 可能解析到 IPv4 或 IPv6，
+    // 因此两个回环地址都要监听；服务只绑定回环地址，不暴露到局域网。
+    let ipv4 = TcpListener::bind("127.0.0.1:19840").await.map_err(|e| {
+        record_auth_event(&app, "callback.listener_failed", serde_json::json!({ "addressFamily": "ipv4" }));
         e.to_string()
     })?;
-    println!("[OAuth] Server listening on port 19840");
+    let ipv6 = TcpListener::bind("[::1]:19840").await.map_err(|e| {
+        record_auth_event(&app, "callback.listener_failed", serde_json::json!({ "addressFamily": "ipv6" }));
+        e.to_string()
+    })?;
+    record_auth_event(&app, "callback.listener_ready", serde_json::json!({}));
 
-    // Store listener in app state
+    // 保存双栈监听器供回调命令接管。
     let oauth_state = app.state::<Arc<Mutex<OAuthState>>>();
-    oauth_state.lock().await.listener = Some(listener);
+    oauth_state.lock().await.listeners = Some(OAuthListeners { ipv4, ipv6 });
 
     let auth_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&state={}",
         BANGUMI_AUTH, CLIENT_ID, "http%3A%2F%2Flocalhost%3A19840%2Fcallback", state,
     );
 
-    println!("[OAuth] Opening browser using opener plugin");
-    // Use opener plugin instead of shell
     let result = app.opener().open_url(&auth_url, None::<&str>);
-    if let Err(e) = &result {
-        println!("[OAuth] Failed to open browser: {}", e);
-    } else {
-        println!("[OAuth] Browser opened");
+    record_auth_event(&app, if result.is_ok() { "oauth.browser_opened" } else { "oauth.browser_failed" }, serde_json::json!({}));
+    if result.is_err() {
+        // 浏览器未打开时释放端口，允许下一次登录重试。
+        oauth_state.lock().await.listeners.take();
     }
     result.map_err(|e| e.to_string())?;
 
@@ -457,30 +465,44 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<AuthUrlResult, String> {
 
 #[tauri::command]
 async fn wait_oauth_callback(app: tauri::AppHandle, expected_state: String) -> Result<OAuthResult, String> {
-    // Retrieve the listener from app state
+    // 接管本次 OAuth 会话的监听器。
     let oauth_state = app.state::<Arc<Mutex<OAuthState>>>();
-    let listener = oauth_state.lock().await.listener.take()
-        .ok_or_else(|| "No OAuth session started".to_string())?;
+    let listeners = oauth_state.lock().await.listeners.take()
+        .ok_or_else(|| {
+            record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "missing-session" }));
+            "No OAuth session started".to_string()
+        })?;
 
-    // Accept one connection with 120s timeout
+    // Firefox/系统可能选择 IPv4 或 IPv6，哪个 listener 先收到回调就使用哪个。
     let (stream, _) = tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        listener.accept(),
+        async {
+            tokio::select! {
+                result = listeners.ipv4.accept() => result,
+                result = listeners.ipv6.accept() => result,
+            }
+        },
     )
     .await
-    .map_err(|_| "Timeout waiting for authorization".to_string())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|_| {
+        record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "timeout" }));
+        "Timeout waiting for authorization".to_string()
+    })?
+    .map_err(|e| {
+        record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "accept" }));
+        e.to_string()
+    })?;
 
     let mut reader = BufReader::new(stream);
     let mut request_line = String::new();
-    reader.read_line(&mut request_line).await.map_err(|e| e.to_string())?;
+    reader.read_line(&mut request_line).await.map_err(|e| {
+        record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "read" }));
+        e.to_string()
+    })?;
 
-    // Parse path: GET /callback?code=...&state=...
+    // 只解析回调参数，绝不记录请求行或查询串。
     let parts: Vec<&str> = request_line.split_whitespace().collect();
-    if parts.len() < 2 {
-        return Ok(OAuthResult { success: false, error: Some("Invalid request".into()), access_token: None, refresh_token: None, expires_at: None });
-    }
-    let path = parts[1];
+    let path = parts.get(1).copied().unwrap_or_default();
 
     let mut code = String::new();
     let mut returned_state = String::new();
@@ -497,19 +519,37 @@ async fn wait_oauth_callback(app: tauri::AppHandle, expected_state: String) -> R
         }
     }
 
-    drop(listener);
+    let mut stream = reader.into_inner();
+    let callback_valid = !code.is_empty() && returned_state == expected_state;
+    let response_status = if callback_valid { "200 OK" } else { "400 Bad Request" };
+    let response_body = if callback_valid {
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Bangumini</title></head><body><h1>授权完成</h1><p>可以关闭此页面并返回 Bangumini。</p></body></html>"
+    } else {
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Bangumini</title></head><body><h1>授权失败</h1><p>回调参数无效，请返回应用重试。</p></body></html>"
+    };
+    let response = format!(
+        "HTTP/1.1 {response_status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+        response_body.len(),
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
 
-    if code.is_empty() || returned_state != expected_state {
-        return Ok(OAuthResult { success: false, error: Some(if code.is_empty() { "No auth code".into() } else { "State mismatch".into() }), access_token: None, refresh_token: None, expires_at: None });
+    if !callback_valid {
+        record_auth_event(&app, "callback.failed", serde_json::json!({
+            "reason": if code.is_empty() { "missing-code" } else { "state-mismatch" }
+        }));
+        return Ok(OAuthResult {
+            success: false,
+            error: Some(if code.is_empty() { "No auth code".into() } else { "State mismatch".into() }),
+            access_token: None,
+            refresh_token: None,
+            expires_at: None,
+        });
     }
 
-    // Try to show success page (best effort)
-    if let Ok(listener2) = TcpListener::bind("127.0.0.1:19840").await {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), listener2.accept()).await;
-        // Browser retry — ignore, user can close manually
-    }
+    record_auth_event(&app, "callback.accepted", serde_json::json!({}));
 
-    // Exchange code for tokens
+    // 用授权码换取凭据。
     let client = build_client_with_proxy(&*app.state::<ProxyHolder>());
     let params = [
         ("grant_type", "authorization_code"),
@@ -522,19 +562,31 @@ async fn wait_oauth_callback(app: tauri::AppHandle, expected_state: String) -> R
     let token_res = client.post(BANGUMI_TOKEN).form(&params).send().await;
     let res = match token_res {
         Ok(r) => r,
-        Err(e) => return Ok(OAuthResult { success: false, error: Some(format!("Request: {}", e)), access_token: None, refresh_token: None, expires_at: None }),
+        Err(e) => {
+            record_auth_event(&app, "token.exchange_failed", serde_json::json!({ "reason": "network" }));
+            return Ok(OAuthResult { success: false, error: Some(format!("Request: {}", e)), access_token: None, refresh_token: None, expires_at: None });
+        }
     };
 
     if !res.status().is_success() {
+        record_auth_event(&app, "token.exchange_failed", serde_json::json!({ "reason": "http", "status": res.status().as_u16() }));
         let body = res.text().await.unwrap_or_default();
         return Ok(OAuthResult { success: false, error: Some(format!("Token fail: {}", body)), access_token: None, refresh_token: None, expires_at: None });
     }
 
     let data: serde_json::Value = match res.json().await {
         Ok(d) => d,
-        Err(e) => return Ok(OAuthResult { success: false, error: Some(format!("Parse: {}", e)), access_token: None, refresh_token: None, expires_at: None }),
+        Err(e) => {
+            record_auth_event(&app, "token.exchange_failed", serde_json::json!({ "reason": "invalid-response" }));
+            return Ok(OAuthResult { success: false, error: Some(format!("Parse: {}", e)), access_token: None, refresh_token: None, expires_at: None });
+        }
     };
 
+    if data["access_token"].as_str().is_none_or(str::is_empty) {
+        record_auth_event(&app, "token.exchange_failed", serde_json::json!({ "reason": "invalid-response" }));
+        return Ok(OAuthResult { success: false, error: Some("Invalid token response".into()), access_token: None, refresh_token: None, expires_at: None });
+    }
+    record_auth_event(&app, "token.exchange_succeeded", serde_json::json!({}));
     Ok(OAuthResult {
         success: true,
         error: None,
@@ -558,6 +610,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            auth_diagnostics::record_auth_diagnostic,
             fetch_proxy,
             start_oauth,
             wait_oauth_callback,
@@ -580,7 +633,7 @@ pub fn run() {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
             // Initialize OAuth state
-            app.manage(Arc::new(Mutex::new(OAuthState { listener: None })));
+            app.manage(Arc::new(Mutex::new(OAuthState { listeners: None })));
 
             // Show guard: prevents Focused(false) from immediately hiding a just-shown window
             let show_guard: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
