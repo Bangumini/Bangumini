@@ -739,7 +739,10 @@ pub fn run() {
                 match event {
                     tauri::WindowEvent::Focused(false) => {
                         // Don't hide if guard is set or currently dragging
-                        if !g_events.load(Ordering::SeqCst) && !IS_DRAGGING.load(Ordering::SeqCst) {
+                        if !g_events.load(Ordering::SeqCst)
+                            && !IS_DRAGGING.load(Ordering::SeqCst)
+                            && !w_events.is_always_on_top().unwrap_or(false)
+                        {
                             let _ = w_events.hide();
                         }
                     }

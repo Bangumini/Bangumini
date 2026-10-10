@@ -85,6 +85,15 @@ export function ExternalIcon(p: IconProps) {
   );
 }
 
+export function PinIcon(p: IconProps) {
+	return (
+		<svg {...base(p)}>
+			<path d="m15 4 5 5-3 1-4 4v4l-2 2-2-2v-4l-4-4-3-1 5-5z" />
+			<path d="M12 20v2" />
+		</svg>
+	);
+}
+
 export function GithubIcon(p: IconProps) {
   return (
     <svg {...base({ ...p, stroke: "none", fill: "currentColor" })}>
