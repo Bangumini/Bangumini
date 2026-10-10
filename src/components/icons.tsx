@@ -94,6 +94,17 @@ export function PinIcon(p: IconProps) {
 	);
 }
 
+export function RefreshIcon(p: IconProps) {
+	return (
+		<svg {...base(p)}>
+			<path d="M20 11a8 8 0 0 0-14.9-4L3 10" />
+			<path d="M3 5v5h5" />
+			<path d="M4 13a8 8 0 0 0 14.9 4L21 14" />
+			<path d="M21 19v-5h-5" />
+		</svg>
+	);
+}
+
 export function GithubIcon(p: IconProps) {
   return (
     <svg {...base({ ...p, stroke: "none", fill: "currentColor" })}>

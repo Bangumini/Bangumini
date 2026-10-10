@@ -1,18 +1,46 @@
 import { useState } from "react";
+import { check } from "@tauri-apps/plugin-updater";
 import { setToken } from "../api/oauth";
 import { recordAuthEvent } from "../api/auth-diagnostics";
+import { isTauri } from "../api/tauri-fetch";
+import { RefreshIcon, SettingsIcon } from "../components/icons";
 import ProxySettingsModal from "../components/ProxySettingsModal";
+
+type UpdateStatus = "idle" | "checking" | "up-to-date" | "available" | "error";
 
 export default function LoginPage({ onLogin }: { onLogin: () => void }) {
   const [token, setTokenText] = useState("");
   const [loading, setLoading] = useState(false);
   const [showProxyModal, setShowProxyModal] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
+  const [latestVersion, setLatestVersion] = useState("");
 
   function handleManualSubmit() {
     const trimmed = token.trim();
     if (!trimmed) return;
     setToken(trimmed);
     onLogin();
+  }
+
+  async function handleCheckUpdate() {
+    if (!isTauri()) {
+      setUpdateStatus("error");
+      return;
+    }
+
+    setUpdateStatus("checking");
+    setLatestVersion("");
+    try {
+      const update = await check();
+      if (update) {
+        setLatestVersion(update.version);
+        setUpdateStatus("available");
+      } else {
+        setUpdateStatus("up-to-date");
+      }
+    } catch {
+      setUpdateStatus("error");
+    }
   }
 
   async function handleOAuthLogin() {
@@ -117,12 +145,56 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
           手动登录
         </button>
 
-        <div className="text-center pt-1">
+        <div className="border-t border-line pt-4 space-y-2.5">
+          <p className="text-[12px] font-medium text-fg-secondary">网络与更新</p>
           <button
+            type="button"
             onClick={() => setShowProxyModal(true)}
-            className="text-[12px] text-fg-tertiary hover:text-accent transition-colors"
+            className="w-full flex items-center justify-between gap-3 rounded-lg border border-line bg-elevated/50 px-3 py-2.5 text-left transition-colors hover:bg-hover"
           >
-            代理设置
+            <span className="flex items-center gap-2.5">
+              <SettingsIcon size={16} className="shrink-0 text-accent" />
+              <span>
+                <span className="block text-[13px] font-medium text-fg">
+                  代理设置
+                </span>
+                <span className="block mt-0.5 text-[11px] text-fg-tertiary">
+                  登录或联网异常时配置代理
+                </span>
+              </span>
+            </span>
+            <span className="text-[11px] text-fg-tertiary">打开</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleCheckUpdate()}
+            disabled={updateStatus === "checking"}
+            className="w-full flex items-center justify-between gap-3 rounded-lg border border-line bg-elevated/50 px-3 py-2.5 text-left transition-colors hover:bg-hover disabled:cursor-wait disabled:opacity-60"
+          >
+            <span className="flex items-center gap-2.5">
+              <RefreshIcon size={16} className="shrink-0 text-accent" />
+              <span>
+                <span className="block text-[13px] font-medium text-fg">
+                  {updateStatus === "checking" ? "正在检查更新…" : "检查更新"}
+                </span>
+                <span
+                  className={`block mt-0.5 text-[11px] ${
+                    updateStatus === "available"
+                      ? "text-accent"
+                      : updateStatus === "error"
+                        ? "text-danger"
+                        : "text-fg-tertiary"
+                  }`}
+                >
+                  {updateStatus === "idle" && "无需登录即可检查新版本"}
+                  {updateStatus === "checking" && "正在连接更新服务器…"}
+                  {updateStatus === "up-to-date" && "当前已是最新版本"}
+                  {updateStatus === "available" &&
+                    `发现新版本 v${latestVersion}，登录后可安装`}
+                  {updateStatus === "error" && "检查失败，点击重试"}
+                </span>
+              </span>
+            </span>
           </button>
         </div>
       </div>

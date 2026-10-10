@@ -162,7 +162,7 @@ export default function ProxySettingsModal({ onClose }: { onClose: () => void })
         )}
 
         <p className="text-[11px] text-fg-tertiary leading-relaxed">
-          如果 Bangumi / AniList API 无法直连，请在此配置代理。登录后可在设置页中随时修改。
+          如果 Bangumi / AniList API 无法直连，请在此配置代理。登录后也可在设置页中修改。
         </p>
       </div>
     </div>
