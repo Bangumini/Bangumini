@@ -18,7 +18,7 @@ import {
 	deletePersistentCollectionTask,
 	markPersistentCollectionTaskFailed,
 	markPersistentCollectionTaskRunning,
-	readCachedValue,
+	readCachedValueEntryAllowStale,
 	readDuePersistentCollectionTask,
 	readNextPersistentCollectionTaskRunAt,
 	readPersistentCollectionTasks,
@@ -223,6 +223,66 @@ function removeCollection(
 	};
 }
 
+export function mergePendingCollectionTasks({
+	data,
+	currentData,
+	tasks,
+	cachedCollections,
+	username,
+	collectionType,
+}: {
+	data: PagedResponse<UserCollection>;
+	currentData?: PagedResponse<UserCollection>;
+	tasks: CollectionTask[];
+	cachedCollections?: UserCollection[];
+	username: string;
+	collectionType: CollectionType;
+}): PagedResponse<UserCollection> {
+	const subjectIds = new Set(
+		tasks
+			.filter((task) => task.payload.username === username)
+			.map((task) => getTaskSubjectId(task)),
+	);
+	if (subjectIds.size === 0) return data;
+
+	const fallbackBySubjectId = new Map<number, UserCollection>();
+	for (const collection of currentData?.data ?? []) {
+		fallbackBySubjectId.set(collection.subject_id, collection);
+	}
+	for (const collection of cachedCollections ?? []) {
+		fallbackBySubjectId.set(collection.subject_id, collection);
+	}
+
+	const mergedBySubjectId = new Map(
+		data.data.map((collection) => [collection.subject_id, collection]),
+	);
+	for (const subjectId of subjectIds) {
+		const patch = getOptimisticCollectionPatchForSubject(subjectId, tasks);
+		if (!patch) continue;
+
+		const source =
+			mergedBySubjectId.get(subjectId) ?? fallbackBySubjectId.get(subjectId);
+		if (!source) continue;
+
+		const merged = { ...source, ...patch };
+		if (merged.type === collectionType) {
+			mergedBySubjectId.set(subjectId, merged);
+		} else {
+			mergedBySubjectId.delete(subjectId);
+		}
+	}
+
+	const mergedData = [...mergedBySubjectId.values()];
+	return {
+		...data,
+		data: mergedData,
+		total: Math.max(
+			0,
+			data.total + mergedData.length - data.data.length,
+		),
+	};
+}
+
 async function syncCollectionCaches(
 	username: string,
 	collection: UserCollection,
@@ -233,11 +293,13 @@ async function syncCollectionCaches(
 
 	const currentCacheKey = `${COLLECTIONS_CACHE_PREFIX}${collection.type}-${username}`;
 	const currentCached =
-		await readCachedValue<PagedResponse<UserCollection>>(currentCacheKey);
-	if (currentCached?.data) {
+		await readCachedValueEntryAllowStale<PagedResponse<UserCollection>>(
+			currentCacheKey,
+		);
+	if (currentCached?.payload.data) {
 		await writeCachedValue(
 			currentCacheKey,
-			upsertCollection(currentCached, collection),
+			upsertCollection(currentCached.payload, collection),
 		);
 	}
 
@@ -254,11 +316,13 @@ async function syncCollectionCaches(
 	for (const type of typesToRemoveFrom) {
 		const cacheKey = `${COLLECTIONS_CACHE_PREFIX}${type}-${username}`;
 		const cached =
-			await readCachedValue<PagedResponse<UserCollection>>(cacheKey);
-		if (cached?.data) {
+			await readCachedValueEntryAllowStale<PagedResponse<UserCollection>>(
+				cacheKey,
+			);
+		if (cached?.payload.data) {
 			await writeCachedValue(
 				cacheKey,
-				removeCollection(cached, collection.subject_id),
+				removeCollection(cached.payload, collection.subject_id),
 			);
 		}
 

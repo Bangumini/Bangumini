@@ -20,19 +20,33 @@ export function refreshQueryDataIfChanged<T>({
   refreshKey,
   currentData,
   refresh,
+  hasLocalChanges,
 }: {
   queryClient: QueryClient;
   queryKey: QueryKey;
   refreshKey: string;
   currentData: T;
   refresh: () => Promise<T>;
+  hasLocalChanges?: (liveData: T, originalData: T) => boolean;
 }): Promise<boolean> | null {
   if (refreshInFlight.has(refreshKey)) return null;
   refreshInFlight.add(refreshKey);
 
   return refresh()
     .then((nextData) => {
-      if (!isSamePayload(currentData, nextData)) {
+      const liveData = queryClient.getQueryData<T>(queryKey);
+      if (
+        liveData !== undefined &&
+        !isSamePayload(liveData, currentData) &&
+        !isSamePayload(liveData, nextData) &&
+        (!hasLocalChanges || hasLocalChanges(liveData, currentData))
+      ) {
+        // 刷新期间已有本地交互更新，避免迟到的网络快照覆盖它。
+        return false;
+      }
+
+      const baseData = liveData ?? currentData;
+      if (!isSamePayload(baseData, nextData)) {
         queryClient.setQueryData<T>(queryKey, nextData);
         return true;
       }
