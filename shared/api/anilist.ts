@@ -157,6 +157,7 @@ interface NextSeasonResponse {
       }[];
     };
   };
+  errors?: { message?: string }[];
 }
 
 export function getNextSeasonInfo(): {
@@ -190,38 +191,57 @@ export async function getNextSeason(): Promise<NextSeasonItem[]> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
 
-    const res = await fetchFn(BASE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    if (!res.ok) break;
-
-    const json = (await res.json()) as NextSeasonResponse;
-    const media = json.data?.Page?.media ?? [];
-    hasNext = json.data?.Page?.pageInfo?.hasNextPage ?? false;
-
-    for (const m of media) {
-      allItems.push({
-        id: m.id,
-        title: { native: m.title.native, romaji: m.title.romaji },
-        cover: m.coverImage.large,
-        startDate: {
-          year: m.startDate.year ?? 0,
-          month: m.startDate.month ?? 0,
-          day: m.startDate.day,
-        },
-        airingAt: m.nextAiringEpisode?.airingAt ?? null,
-        episode: m.nextAiringEpisode?.episode ?? null,
-        episodes: m.episodes,
-        format: m.format,
+    try {
+      const res = await fetchFn(BASE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+        signal: controller.signal,
       });
-    }
 
-    page++;
+      if (!res.ok) {
+        throw new Error(`AniList HTTP ${res.status}`);
+      }
+
+      const json = (await res.json()) as NextSeasonResponse;
+      if (json.errors?.length) {
+        throw new Error(
+          json.errors[0]?.message || "AniList GraphQL error",
+        );
+      }
+
+      const pageData = json.data?.Page;
+      if (!pageData) {
+        throw new Error("AniList response missing Page");
+      }
+
+      const media = pageData.media ?? [];
+      hasNext = pageData.pageInfo?.hasNextPage ?? false;
+      if (hasNext && media.length === 0) {
+        throw new Error("AniList returned an empty page before completion");
+      }
+
+      for (const m of media) {
+        allItems.push({
+          id: m.id,
+          title: { native: m.title.native, romaji: m.title.romaji },
+          cover: m.coverImage.large,
+          startDate: {
+            year: m.startDate.year ?? 0,
+            month: m.startDate.month ?? 0,
+            day: m.startDate.day,
+          },
+          airingAt: m.nextAiringEpisode?.airingAt ?? null,
+          episode: m.nextAiringEpisode?.episode ?? null,
+          episodes: m.episodes,
+          format: m.format,
+        });
+      }
+
+      page++;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   return allItems;

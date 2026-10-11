@@ -427,7 +427,11 @@ export default function NextSeasonPage() {
 				}
 			}
 
-			if (cachedBase) {
+			if (
+				cachedBase &&
+				Array.isArray(cachedBase.payload) &&
+				cachedBase.payload.length > 0
+			) {
 				const baseItems = filterUpcomingNextSeasonItems(cachedBase.payload);
 				const staleBase = isCacheStale(
 					cachedBase.updatedAt,
