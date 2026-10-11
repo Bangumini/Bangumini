@@ -20,7 +20,7 @@ export default function FetchIndicator() {
   if (!labels) return null;
 
   return (
-    <span className="shrink-0 text-[12px] text-fg-tertiary animate-pulse ml-auto">
+    <span className="shrink-0 text-[12px] text-fg-tertiary animate-pulse ml-auto mr-10">
       加载{labels}…
     </span>
   );
