@@ -91,6 +91,19 @@ export default function SearchPage() {
       },
     },
     {
+      key: "o",
+      mod: true,
+      when: () => subjects.length > 0,
+      handler: () => {
+        const s = subjects[focusedIndex];
+        if (s) {
+          import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
+            openUrl(`https://bgm.tv/subject/${s.id}`);
+          });
+        }
+      },
+    },
+    {
       key: ["ArrowLeft", "ArrowRight"],
       when: () => subjects.length > 0,
       handler: ({ event }) => {
