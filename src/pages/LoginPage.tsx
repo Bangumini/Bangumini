@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { check } from "@tauri-apps/plugin-updater";
+import { checkForUpdate } from "../api/update-check";
 import { setToken } from "../api/oauth";
 import { recordAuthEvent } from "../api/auth-diagnostics";
 import { isTauri } from "../api/tauri-fetch";
@@ -31,7 +31,7 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
     setUpdateStatus("checking");
     setLatestVersion("");
     try {
-      const update = await check();
+      const update = await checkForUpdate();
       if (update) {
         setLatestVersion(update.version);
         setUpdateStatus("available");

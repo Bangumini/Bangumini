@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { check } from "@tauri-apps/plugin-updater";
+import { checkForUpdate } from "../api/update-check";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { clearToken, setToken, isLoggedIn } from "../api/oauth";
@@ -106,7 +106,7 @@ export default function SettingsPage() {
 	const [downloadProgress, setDownloadProgress] = useState(0);
 	const [distributionKind, setDistributionKind] =
 		useState<DistributionKind>("installer");
-	const updateRef = useRef<Awaited<ReturnType<typeof check>>>(null);
+	const updateRef = useRef<Awaited<ReturnType<typeof checkForUpdate>>>(null);
 	const [proxy, setProxy] = useState<ProxyConfig>(loadProxyConfig);
 	const [proxySaved, setProxySaved] = useState(false);
 	const [copyTitleWithSeason, setCopyTitleWithSeason] = useState(
@@ -145,7 +145,7 @@ export default function SettingsPage() {
 	const handleCheckUpdate = async () => {
 		setUpdateStatus("checking");
 		try {
-			const update = await check();
+			const update = await checkForUpdate();
 			updateRef.current = update;
 			if (update) {
 				setLatestVersion(update.version);

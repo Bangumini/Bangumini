@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { check } from "@tauri-apps/plugin-updater";
+import { checkForUpdate } from "../api/update-check";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../api/tauri-fetch";
 
@@ -70,7 +70,7 @@ export function useAutoUpdateCheck(): AutoUpdateCheckState {
 		if (checkingRef.current) return;
 		checkingRef.current = true;
 		try {
-			const update = await check();
+			const update = await checkForUpdate();
 			// 无论有无更新，成功检查都刷新节流时间戳（失败不刷新，便于下次重试）
 			localStorage.setItem(LAST_UPDATE_CHECK_KEY, String(Date.now()));
 			if (update && update.version !== getSkippedUpdateVersion()) {
