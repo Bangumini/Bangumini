@@ -14,6 +14,13 @@ import type {
 	UserCollection,
 } from "@shared/api/types";
 import {
+	applyCollectionPatch,
+	mergeCollectionPatchIntoList,
+	removeCollection,
+	updateCollectionListForType,
+	upsertCollection,
+} from "@shared/collection-cache";
+import {
 	completePersistentCollectionTask,
 	deletePersistentCollectionTask,
 	markPersistentCollectionTaskFailed,
@@ -187,42 +194,6 @@ function getExpectedNextType(task: CollectionTask): CollectionType | undefined {
 	return undefined;
 }
 
-function upsertCollection(
-	data: PagedResponse<UserCollection>,
-	collection: UserCollection,
-): PagedResponse<UserCollection> {
-	const idx = data.data.findIndex(
-		(item) => item.subject_id === collection.subject_id,
-	);
-	if (idx >= 0) {
-		const next = [...data.data];
-		next[idx] = collection;
-		return { ...data, data: next };
-	}
-
-	return {
-		...data,
-		total: data.total + 1,
-		data: [collection, ...data.data],
-	};
-}
-
-function removeCollection(
-	data: PagedResponse<UserCollection>,
-	subjectId: number,
-): PagedResponse<UserCollection> {
-	const idx = data.data.findIndex((item) => item.subject_id === subjectId);
-	if (idx < 0) return data;
-
-	const next = [...data.data];
-	next.splice(idx, 1);
-	return {
-		...data,
-		total: Math.max(0, data.total - 1),
-		data: next,
-	};
-}
-
 export function mergePendingCollectionTasks({
 	data,
 	currentData,
@@ -253,43 +224,53 @@ export function mergePendingCollectionTasks({
 		fallbackBySubjectId.set(collection.subject_id, collection);
 	}
 
-	const mergedBySubjectId = new Map(
-		data.data.map((collection) => [collection.subject_id, collection]),
-	);
+	let mergedData = data;
 	for (const subjectId of subjectIds) {
 		const patch = getOptimisticCollectionPatchForSubject(subjectId, tasks);
 		if (!patch) continue;
 
-		const source =
-			mergedBySubjectId.get(subjectId) ?? fallbackBySubjectId.get(subjectId);
-		if (!source) continue;
-
-		const merged = { ...source, ...patch };
-		if (merged.type === collectionType) {
-			mergedBySubjectId.set(subjectId, merged);
-		} else {
-			mergedBySubjectId.delete(subjectId);
-		}
+		mergedData = mergeCollectionPatchIntoList({
+			data: mergedData,
+			subjectId,
+			patch,
+			collectionType,
+			fallbackCollection: fallbackBySubjectId.get(subjectId),
+		});
 	}
 
-	const mergedData = [...mergedBySubjectId.values()];
-	return {
-		...data,
-		data: mergedData,
-		total: Math.max(
-			0,
-			data.total + mergedData.length - data.data.length,
-		),
-	};
+	return mergedData;
 }
 
 async function syncCollectionCaches(
 	username: string,
 	collection: UserCollection,
-	previousType?: CollectionType,
 ) {
+	const typesToRemoveFrom = COLLECTION_TYPES.filter(
+		(type) => type !== collection.type,
+	);
+	// 旧任务执行期间可能又有新任务入队；服务端确认值不能覆盖更新的本地意图。
+	const tasks = (await getCollectionTaskQueue()).filter(
+		(task) => task.payload.username === username,
+	);
+	const patch = getOptimisticCollectionPatchForSubject(collection.subject_id, tasks);
+	const visibleCollection = patch ? applyCollectionPatch(collection, patch) : collection;
+
+	// 内存显示任务投影，SQLite 仅持久化本次服务端确认的基础值。
+	queryClient?.setQueryData(["collection", collection.subject_id], visibleCollection);
+	for (const type of COLLECTION_TYPES) {
+		queryClient?.setQueryData<PagedResponse<UserCollection>>(
+			["collections", String(type), username],
+			(old) => updateCollectionListForType(old, visibleCollection, type),
+		);
+	}
+
+	// 刷新日历页/下季度页的收藏状态标签
+	queryClient?.invalidateQueries({
+		queryKey: ["collection-status-map", username],
+	});
+
+	// 内存状态已提交，持久化放在后面完成。
 	await writeCachedCollection(username, collection);
-	queryClient?.setQueryData(["collection", collection.subject_id], collection);
 
 	const currentCacheKey = `${COLLECTIONS_CACHE_PREFIX}${collection.type}-${username}`;
 	const currentCached =
@@ -303,16 +284,6 @@ async function syncCollectionCaches(
 		);
 	}
 
-	queryClient?.setQueryData<PagedResponse<UserCollection>>(
-		["collections", String(collection.type), username],
-		(old) => (old ? upsertCollection(old, collection) : old),
-	);
-
-	const typesToRemoveFrom =
-		previousType && previousType !== collection.type
-			? [previousType]
-			: COLLECTION_TYPES.filter((type) => type !== collection.type);
-
 	for (const type of typesToRemoveFrom) {
 		const cacheKey = `${COLLECTIONS_CACHE_PREFIX}${type}-${username}`;
 		const cached =
@@ -325,27 +296,7 @@ async function syncCollectionCaches(
 				removeCollection(cached.payload, collection.subject_id),
 			);
 		}
-
-		queryClient?.setQueryData<PagedResponse<UserCollection>>(
-			["collections", String(type), username],
-			(old) => (old ? removeCollection(old, collection.subject_id) : old),
-		);
 	}
-
-	// 刷新日历页/下季度页的收藏状态标签
-	queryClient?.invalidateQueries({
-		queryKey: ["collection-status-map", username],
-	});
-}
-
-async function fetchAndSyncCollection(
-	username: string,
-	subjectId: number,
-	previousType?: CollectionType,
-) {
-	const collection = await getUserCollection(username, subjectId);
-	await syncCollectionCaches(username, collection, previousType);
-	return collection;
 }
 
 async function fetchCollectionOrNull(username: string, subjectId: number) {
@@ -361,20 +312,12 @@ async function ensureCollectionType(
 	username: string,
 	subjectId: number,
 	nextType: CollectionType,
-	previousType?: CollectionType,
 ) {
 	const current = await fetchCollectionOrNull(username, subjectId);
-	if (current?.type === nextType) {
-		await syncCollectionCaches(username, current, previousType);
-		return current;
-	}
+	if (current?.type === nextType) return current;
 
 	await postUserCollection(subjectId, { type: nextType });
-	return fetchAndSyncCollection(
-		username,
-		subjectId,
-		current?.type ?? previousType,
-	);
+	return getUserCollection(username, subjectId);
 }
 
 async function fetchEpisodesForProgress(subjectId: number) {
@@ -399,10 +342,9 @@ function getMainEpisodeIdsBetween(
 async function executeProgressTask(
 	payload: SetProgressTaskPayload | CompleteProgressTaskPayload,
 ) {
-	const { username, subjectId, targetEp, ensureWatching, previousType } =
-		payload;
+	const { username, subjectId, targetEp, ensureWatching } = payload;
 	let collection = ensureWatching
-		? await ensureCollectionType(username, subjectId, 3, previousType)
+		? await ensureCollectionType(username, subjectId, 3)
 		: await fetchCollectionOrNull(username, subjectId);
 
 	if (!collection) {
@@ -427,13 +369,7 @@ async function executeProgressTask(
 			});
 		}
 
-		collection = await fetchAndSyncCollection(
-			username,
-			subjectId,
-			collection.type,
-		);
-	} else {
-		await syncCollectionCaches(username, collection, previousType);
+		collection = await getUserCollection(username, subjectId);
 	}
 
 	if (
@@ -442,11 +378,7 @@ async function executeProgressTask(
 		collection.type !== 2
 	) {
 		await postUserCollection(subjectId, { type: 2 });
-		collection = await fetchAndSyncCollection(
-			username,
-			subjectId,
-			collection.type,
-		);
+		collection = await getUserCollection(username, subjectId);
 	}
 
 	return collection;
@@ -458,7 +390,6 @@ async function executeCollectionTask(task: CollectionTask) {
 			task.payload.username,
 			task.payload.subjectId,
 			task.payload.nextType,
-			task.payload.previousType,
 		);
 	}
 
@@ -522,9 +453,11 @@ export async function enqueueSetCollectionTypeTask(
 		kind: "set-collection-type",
 		payload,
 	});
+	const queuedTask = task ? asCollectionTask(task) : null;
+	if (queuedTask) applyOptimisticCollectionTaskToQueryCaches(queuedTask);
 	emitCollectionTaskQueueChanged();
 	void kickCollectionTaskWorker();
-	return task ? asCollectionTask(task) : null;
+	return queuedTask;
 }
 
 export async function enqueueCompleteProgressTask(
@@ -539,9 +472,11 @@ export async function enqueueCompleteProgressTask(
 		kind: "complete-progress",
 		payload,
 	});
+	const queuedTask = task ? asCollectionTask(task) : null;
+	if (queuedTask) applyOptimisticCollectionTaskToQueryCaches(queuedTask);
 	emitCollectionTaskQueueChanged();
 	void kickCollectionTaskWorker();
-	return task ? asCollectionTask(task) : null;
+	return queuedTask;
 }
 
 export async function retryCollectionTask(id: string) {
@@ -551,7 +486,15 @@ export async function retryCollectionTask(id: string) {
 }
 
 export async function ignoreCollectionTask(id: string) {
+	const task = (await getCollectionTaskQueue()).find((item) => item.id === id);
 	await deletePersistentCollectionTask(id);
+	if (task) {
+		await queryClient?.invalidateQueries({ queryKey: ["collection", task.payload.subjectId] });
+		await queryClient?.invalidateQueries({ queryKey: ["collections"] });
+		await queryClient?.invalidateQueries({
+			queryKey: ["collection-status-map", task.payload.username],
+		});
+	}
 	emitCollectionTaskQueueChanged();
 }
 
@@ -577,6 +520,57 @@ export function getOptimisticCollectionPatchForSubject(
 	}
 
 	return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function findCachedCollection(subjectId: number, username: string) {
+	const direct = queryClient?.getQueryData<UserCollection>([
+		"collection",
+		subjectId,
+	]);
+	if (direct) return direct;
+
+	for (const type of COLLECTION_TYPES) {
+		const list = queryClient?.getQueryData<PagedResponse<UserCollection>>([
+			"collections",
+			String(type),
+			username,
+		]);
+		const collection = list?.data.find(
+			(item) => item.subject_id === subjectId,
+		);
+		if (collection) return collection;
+	}
+	return null;
+}
+
+function applyOptimisticCollectionTaskToQueryCaches(task: CollectionTask) {
+	if (!queryClient) return;
+
+	const current = findCachedCollection(
+		task.payload.subjectId,
+		task.payload.username,
+	);
+	if (!current) return;
+
+	const patch = getOptimisticCollectionPatchForSubject(
+		task.payload.subjectId,
+		[task],
+	);
+	if (!patch) return;
+
+	const optimistic = applyCollectionPatch(current, patch);
+	queryClient.setQueryData(
+		["collection", task.payload.subjectId],
+		optimistic,
+	);
+	for (const type of COLLECTION_TYPES) {
+		queryClient.setQueryData<PagedResponse<UserCollection>>(
+			["collections", String(type), task.payload.username],
+			(old) => updateCollectionListForType(old, optimistic, type),
+		);
+	}
+
+	// 持久化基础数据仍由 worker 成功后完成，避免忽略任务后留下乐观值。
 }
 
 export function getCollectionTaskSummary(task: CollectionTask) {
@@ -626,6 +620,8 @@ export async function kickCollectionTaskWorker() {
 
 			try {
 				const collection = await executeCollectionTask(task);
+				// 只有整个任务完成才提交一次，不能暴露「已更新进度、尚未标记看过」等中间态。
+				await syncCollectionCaches(task.payload.username, collection);
 				await completePersistentCollectionTask(task.id);
 				emitCollectionTaskEvent({
 					taskId: task.id,

@@ -34,3 +34,4 @@ docs/adr
 
 # 本地测试数据（含 API token，勿提交）
 tests/
+.cortexkit/magic-context/

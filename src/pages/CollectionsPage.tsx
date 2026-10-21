@@ -35,6 +35,10 @@ import {
 	GROUP_COLOR,
 } from "@shared/sort-collections";
 import type { SortedCollection } from "@shared/sort-collections";
+import {
+	hasCollectionStateChanged,
+	mergeCollectionPatchIntoList,
+} from "@shared/collection-cache";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
 	deleteCachedValue,
@@ -52,10 +56,12 @@ import {
 } from "@shared/storage/sqlite-cache";
 import { getUsername } from "../api/oauth";
 import { refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
+import { readCachedQueryMap } from "../api/query-map-cache";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import {
 	COLLECTION_TASK_EVENT,
 	getCollectionTaskQueue,
+	getOptimisticCollectionPatchForSubject,
 	mergePendingCollectionTasks,
 	type CollectionTaskEventDetail,
 } from "../api/collection-tasks";
@@ -638,6 +644,9 @@ export default function CollectionsPage() {
 	const [shouldSuppressRefetch, setShouldSuppressRefetch] = useState(
 		initialState.isReturningFromDetail,
 	);
+	const [isReconciliationPending, setIsReconciliationPending] = useState(
+		initialState.isReturningFromDetail,
+	);
 	const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
 	const isWatching = collectionType === "3";
 	const today = useMemo(
@@ -727,94 +736,102 @@ export default function CollectionsPage() {
 		};
 	}, [collectionType, collectionsQueryKey, queryClient]);
 
-	// Detect return from subject detail page and update only the changed item
+	// 从详情页返回时，先完成 pending task 投影，再解除旧列表快照的显示。
 	useEffect(() => {
 		const state = location.state as CollectionsLocationState | null;
-		if (state?.fromSubject && state?.subjectId && uname) {
-			const subjectId = state.subjectId;
-			let cancelled = false;
-			void (async () => {
-				// Get the updated collection from the detail page's cache
-				let updatedCollection = queryClient.getQueryData<UserCollection>([
+		if (!(state?.fromSubject && state.subjectId && uname)) return;
+
+		const subjectId = state.subjectId;
+		let cancelled = false;
+
+		void (async () => {
+			try {
+				const cachedCollection = queryClient.getQueryData<UserCollection>([
 					"collection",
 					subjectId,
 				]);
+				const fallbackCollection =
+					cachedCollection ??
+					((await readCachedCollection(uname, subjectId)) ?? undefined);
+				const pendingTasks = (await getCollectionTaskQueue()).filter(
+					(task) => task.payload.username === uname,
+				);
+				if (cancelled) return;
 
-				// Fallback: try to read the individual collection from SQLite
-				if (!updatedCollection) {
-					updatedCollection =
-						(await readCachedCollection(uname!, subjectId)) ?? undefined;
-				}
-
-				// Get the current collections list
+				// 等待队列期间 worker 或新任务可能已经更新内存，必须重新读取。
+				const liveCollection = queryClient.getQueryData<UserCollection>([
+					"collection",
+					subjectId,
+				]);
+				const updatedCollection = liveCollection ?? fallbackCollection;
 				const currentData =
 					queryClient.getQueryData<PagedResponse<UserCollection>>(
 						collectionsQueryKey,
 					);
+				const pendingPatch = getOptimisticCollectionPatchForSubject(
+					subjectId,
+					pendingTasks,
+				);
+				const currentCollection =
+					updatedCollection ??
+					currentData?.data.find((item) => item.subject_id === subjectId);
+				const updatedPatch = updatedCollection
+					? { type: updatedCollection.type, ep_status: updatedCollection.ep_status }
+					: null;
+				const collectionPatch = liveCollection && liveCollection !== cachedCollection
+					? updatedPatch
+					: pendingPatch ?? updatedPatch;
+				const projectedCollection =
+					currentCollection && collectionPatch
+						? { ...currentCollection, ...collectionPatch }
+						: currentCollection;
 
-				if (currentData?.data && updatedCollection) {
-					// Create updated list
-					let updatedList = [...currentData.data];
-					const itemIndex = updatedList.findIndex(
-						(item) => item.subject_id === state.subjectId,
-					);
-
-					// Check if collection type matches current tab
-					const typeMatches = updatedCollection.type === parseInt(collectionType);
-
-					if (itemIndex >= 0) {
-						if (typeMatches) {
-							// Update in place
-							updatedList[itemIndex] = updatedCollection;
-						} else {
-							// Type changed - remove from current list
-							updatedList.splice(itemIndex, 1);
-						}
-					} else if (typeMatches) {
-						// New item for this collection type - add it
-						updatedList = [updatedCollection, ...updatedList];
-					}
-
-					const updatedData = {
-						...currentData,
-						data: updatedList,
-						total:
-							itemIndex >= 0 && !typeMatches
-								? Math.max(0, (currentData.total ?? currentData.data.length) - 1)
-								: itemIndex < 0 && typeMatches
-									? (currentData.total ?? currentData.data.length) + 1
-									: currentData.total,
-					};
-
-					// Write to SQLite cache
-					await writeCachedValue(collectionsCacheKey, updatedData);
+				if (currentData && projectedCollection && collectionPatch) {
+					const reconciledData = mergeCollectionPatchIntoList({
+						data: currentData,
+						subjectId,
+						patch: collectionPatch,
+						collectionType: Number.parseInt(collectionType, 10) as UserCollection["type"],
+						fallbackCollection: projectedCollection,
+					});
 
 					if (!cancelled) {
-						// Update React Query cache directly without triggering refetch
-						queryClient.setQueryData(collectionsQueryKey, updatedData);
+						queryClient.setQueryData(
+							collectionsQueryKey,
+							(liveData: PagedResponse<UserCollection> | undefined) => {
+								if (!liveData) return reconciledData;
+								return mergeCollectionPatchIntoList({
+									data: liveData,
+									subjectId,
+									patch: collectionPatch,
+									collectionType: Number.parseInt(collectionType, 10) as UserCollection["type"],
+									fallbackCollection: projectedCollection,
+								});
+							},
+						);
 					}
-				} else {
-					// No usable data — delete stale SQLite cache and force a fresh fetch
-					if (!cancelled) {
-						await deleteCachedValue(collectionsCacheKey);
-						await queryClient.invalidateQueries({
-							queryKey: collectionsQueryKey,
-							exact: true,
-						});
-					}
+
+					// 服务端确认后的持久化由 worker 负责；返回页不能将捕获的投影写回 SQLite。
+				} else if (!cancelled) {
+					await deleteCachedValue(collectionsCacheKey);
+					await queryClient.invalidateQueries({
+						queryKey: collectionsQueryKey,
+						exact: true,
+					});
 				}
-			})();
-			window.history.replaceState({}, document.title);
-			// Reset the flag after other effects have run
-			const timer = window.setTimeout(() => {
-				isReturningFromDetail.current = false;
-				setShouldSuppressRefetch(false);
-			}, 100);
-			return () => {
-				cancelled = true;
-				window.clearTimeout(timer);
-			};
-		}
+			} finally {
+				if (!cancelled) {
+					window.history.replaceState({}, document.title);
+					isReturningFromDetail.current = false;
+					setIsReconciliationPending(false);
+					setShouldSuppressRefetch(false);
+				}
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+		};
 	}, [
 		location,
 		queryClient,
@@ -835,6 +852,29 @@ export default function CollectionsPage() {
 		queryFn: async () => {
 			if (!uname) return { data: [], total: 0 };
 
+			const initialData = queryClient.getQueryData<PagedResponse<UserCollection>>(
+				collectionsQueryKey,
+			);
+			const mergeResult = async (
+				data: PagedResponse<UserCollection>,
+				preferMemory = false,
+			) => {
+				const currentData = queryClient.getQueryData<PagedResponse<UserCollection>>(
+					collectionsQueryKey,
+				);
+				const merged = await mergePendingCollectionData(
+					preferMemory ? currentData ?? data : data,
+					currentData,
+					uname,
+					collectionType,
+				);
+				const liveData = queryClient.getQueryData<PagedResponse<UserCollection>>(
+					collectionsQueryKey,
+				);
+				// SQLite/队列读取期间 worker 可能已经完成；不能再把先前读到的旧值提交回来。
+				return liveData !== undefined && liveData !== initialData ? liveData : merged;
+			};
+
 			const legacyCollections = () =>
 				readLegacyHttpCache<PagedResponse<UserCollection>>(
 					`collections-${collectionType}-${uname}`,
@@ -845,14 +885,7 @@ export default function CollectionsPage() {
 				() => readCachedCollectionsByType(uname, collectionType),
 			);
 			if (cached) {
-				const cachedPayload = await mergePendingCollectionData(
-					cached.payload,
-					queryClient.getQueryData<PagedResponse<UserCollection>>(
-						collectionsQueryKey,
-					),
-					uname,
-					collectionType,
-				);
+				const cachedPayload = await mergeResult(cached.payload, true);
 				const cachedEntry = { ...cached, payload: cachedPayload };
 				setQuerySource("collections", collectionsCacheKey, "cache");
 				setCachedCollectionsSnapshot({
@@ -931,15 +964,7 @@ export default function CollectionsPage() {
 					collectionType,
 					uname,
 					collectionsCacheKey,
-					(networkResult) =>
-						mergePendingCollectionData(
-							networkResult,
-							queryClient.getQueryData<PagedResponse<UserCollection>>(
-								collectionsQueryKey,
-							),
-							uname,
-							collectionType,
-						),
+					mergeResult,
 				);
 				setQuerySource("collections", collectionsCacheKey, "network");
 				return result;
@@ -948,14 +973,7 @@ export default function CollectionsPage() {
 					PagedResponse<UserCollection>
 				>(collectionsCacheKey, legacyCollections);
 				if (fallback) {
-					const mergedFallback = await mergePendingCollectionData(
-						fallback,
-						queryClient.getQueryData<PagedResponse<UserCollection>>(
-							collectionsQueryKey,
-						),
-						uname,
-						collectionType,
-					);
+					const mergedFallback = await mergeResult(fallback, true);
 					setQuerySource("collections", collectionsCacheKey, "cache");
 					setCachedCollectionsSnapshot({
 						key: collectionsCacheKey,
@@ -1069,6 +1087,13 @@ export default function CollectionsPage() {
 	} = useQuery({
 		queryKey: ["anilist-airing-times-cache-v2", airingTimeCacheKey],
 		queryFn: () => readCachedAiringRecords(airingTimeCacheIds),
+		placeholderData: () =>
+			readCachedQueryMap<AiringCacheRecord>(
+				queryClient,
+				[["anilist-airing-times-cache-v2"], ["anilist-airing-times-v2"]],
+				airingTimeCacheIds,
+				(record) => record.fetchedAt,
+			),
 		enabled: shouldReadAiringTimeCache,
 		staleTime: 5 * 60 * 1000,
 		refetchOnWindowFocus: true,
@@ -1131,10 +1156,25 @@ export default function CollectionsPage() {
 		isFetching: isAiringTimeFetching,
 	} = useQuery({
 		queryKey: ["anilist-airing-times-v2", airingTimeTargetKey],
+		placeholderData: () =>
+			readCachedQueryMap<AiringCacheRecord>(
+				queryClient,
+				[["anilist-airing-times-cache-v2"], ["anilist-airing-times-v2"]],
+				airingTimeTargets.map((item) => item.subjectId),
+				(record) => record.fetchedAt,
+			),
 		queryFn: async () => {
-			const map = new Map<number, AiringCacheRecord>(
-				cachedAiringRecordMap ?? EMPTY_AIRING_RECORD_MAP,
-			);
+			const map = readCachedQueryMap<AiringCacheRecord>(
+				queryClient,
+				[["anilist-airing-times-cache-v2"], ["anilist-airing-times-v2"]],
+				airingTimeTargets.map((item) => item.subjectId),
+				(record) => record.fetchedAt,
+			) ?? new Map<number, AiringCacheRecord>();
+			for (const [subjectId, record] of cachedAiringRecordMap ?? []) {
+				if (record.fetchedAt >= (map.get(subjectId)?.fetchedAt ?? -1)) {
+					map.set(subjectId, record);
+				}
+			}
 			const now = getCurrentTimestamp();
 			const targetsToRefresh = airingTimeTargets.filter((item) =>
 				shouldRefreshAiringRecord(map.get(item.subjectId), now),
@@ -1189,7 +1229,9 @@ export default function CollectionsPage() {
 		);
 		if (airingRecordMapData) {
 			for (const [subjectId, record] of airingRecordMapData) {
-				merged.set(subjectId, record);
+				if (record.fetchedAt >= (merged.get(subjectId)?.fetchedAt ?? -1)) {
+					merged.set(subjectId, record);
+				}
 			}
 		}
 		return merged;
@@ -1210,13 +1252,25 @@ export default function CollectionsPage() {
 		isFetching: isEpisodeFetching,
 	} = useQuery({
 		queryKey: episodesQueryKey,
+		placeholderData: () =>
+			readCachedQueryMap<Episode[]>(
+				queryClient,
+				[["episodes-schedule-v2"]],
+				allEpisodeIds,
+			),
 		queryFn: async () => {
 			if (allEpisodeIds.length === 0) {
 				return new Map<number, Episode[]>();
 			}
 
 			const now = getCurrentTimestamp();
-			const map = new Map<number, Episode[]>();
+			const map = new Map<number, Episode[]>(
+				readCachedQueryMap<Episode[]>(
+					queryClient,
+					[["episodes-schedule-v2"]],
+					allEpisodeIds,
+				),
+			);
 			const cachedBySubjectId = new Map<number, EpisodeScheduleCache>();
 			const idsToFetch: number[] = [];
 			// 一次读取所有剧集缓存，避免切换标签时为每个条目单独进行 IPC/SQLite 查询。
@@ -1236,7 +1290,7 @@ export default function CollectionsPage() {
 				idsToFetch.push(id);
 			}
 
-			const cachedEpisodeListMap = new Map<number, Episode[]>();
+			const cachedEpisodeListMap = new Map<number, Episode[]>(map);
 			for (const [id, cached] of cachedBySubjectId) {
 				cachedEpisodeListMap.set(id, cached.episodes);
 			}
@@ -1426,13 +1480,14 @@ export default function CollectionsPage() {
 		cachedCollectionsSnapshot.key === collectionsCacheKey &&
 		cachedCollectionsSnapshot.complete &&
 		cachedCollectionsSnapshot.value !== null;
-	const cacheCollectionsData = hasCollectionsSnapshot
-		? cachedCollectionsSnapshot.value
-		: collData ?? null;
+	// SQLite 快照只补首屏缺失数据，不能覆盖已提交的乐观/服务端内存状态。
+	const cacheCollectionsData =
+		collData ?? (hasCollectionsSnapshot ? cachedCollectionsSnapshot.value : null);
 	const cacheRawCollections = cacheCollectionsData?.data ?? EMPTY_COLLECTIONS;
 	const cacheCalendar = useMemo(
 		() => {
 			if (!isWatching) return undefined;
+			if (calendar) return calendar;
 			if (
 				cachedCalendarSnapshot.key === "calendar" &&
 				cachedCalendarSnapshot.complete
@@ -1452,10 +1507,11 @@ export default function CollectionsPage() {
 		[airingRecordMap],
 	);
 	const cacheEpisodeListMap =
-		cachedEpisodeSnapshot.key === episodesQuerySourceKey &&
-		cachedEpisodeSnapshot.value
+		episodeMap ??
+		(cachedEpisodeSnapshot.key === episodesQuerySourceKey
 			? cachedEpisodeSnapshot.value
-			: episodeMap ?? EMPTY_EPISODE_LIST_MAP;
+			: null) ??
+		EMPTY_EPISODE_LIST_MAP;
 
 	const cacheDerivedAiringData = useMemo(
 		() =>
@@ -1554,9 +1610,10 @@ export default function CollectionsPage() {
 		todayDateKey,
 		nowMs,
 		"cache",
-		cachedCollectionsSnapshot.key === collectionsCacheKey
-			? cachedCollectionsSnapshot.version
-			: collUpdatedAt || "memory",
+		collUpdatedAt ||
+			(cachedCollectionsSnapshot.key === collectionsCacheKey
+				? cachedCollectionsSnapshot.version
+				: "memory"),
 		cachedCalendarSnapshot.key === "calendar"
 			? cachedCalendarSnapshot.version
 			: calendarUpdatedAt || "memory",
@@ -1658,10 +1715,26 @@ export default function CollectionsPage() {
 			: null;
 	const committedForScope =
 		committedState?.scopeKey === committedScopeKey ? committedState : null;
-	const activeCommittedState =
-		committedForScope?.source === "network"
-			? committedForScope
-			: (localFallbackState ?? committedForScope);
+	const shouldShowLiveCollectionState =
+		!isReconciliationPending &&
+		isDisplayDataAvailable &&
+		committedForScope?.source === "network" &&
+		hasCollectionStateChanged(committedForScope.sorted, sorted);
+	const liveCollectionState: CommittedCollectionsState = {
+		scopeKey: committedScopeKey,
+		version: committedVersion,
+		source: committedSource,
+		sorted,
+		displayLabelMap,
+		justUpdatedSubjectIds,
+	};
+	const activeCommittedState = isReconciliationPending
+		? null
+		: shouldShowLiveCollectionState
+			? liveCollectionState
+			: committedForScope?.source === "network"
+				? committedForScope
+				: (localFallbackState ?? committedForScope);
 	const visibleSorted = activeCommittedState?.sorted ?? EMPTY_SORTED;
 	const visibleDisplayLabelMap =
 		activeCommittedState?.displayLabelMap ?? EMPTY_DISPLAY_LABEL_MAP;
