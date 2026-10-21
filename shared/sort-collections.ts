@@ -86,6 +86,7 @@ export function getCollectionMeta(
 	airedEpMap: Map<number, number>,
 	airingSignalMap?: ReadonlyMap<number, unknown>,
 	nextAiringAtMap?: ReadonlyMap<number, number>,
+	airingStateOverrides?: ReadonlyMap<number, boolean>,
 ): CollectionMeta {
 	const nextAiringAt = nextAiringAtMap?.get(c.subject_id);
 	const nextAiringWeekday = nextAiringAt
@@ -98,8 +99,8 @@ export function getCollectionMeta(
 		(c.subject.date ? getWeekdayFromDate(c.subject.date) : 0);
 	const totalEp = getTotalEp(c);
 	// BGM 日历为主要在播信号；AniList 仅在 BGM 日历缺失时辅助判定。
-	const isAiring =
-		airingMap.has(c.subject_id) || Boolean(airingSignalMap?.has(c.subject_id));
+	const isAiring = airingStateOverrides?.get(c.subject_id) ??
+		(airingMap.has(c.subject_id) || Boolean(airingSignalMap?.has(c.subject_id)));
 	const knownAiredEp = isAiring ? airedEpMap.get(c.subject_id) : totalEp;
 	// BGM 剧集数据缺失时保持当前进度，避免网络失败把条目提前推入未追平组。
 	const airedEp = knownAiredEp ?? c.ep_status;
@@ -132,6 +133,7 @@ export function sortCollections(
 	airedEpMap: Map<number, number>,
 	airingSignalMap?: ReadonlyMap<number, unknown>,
 	nextAiringAtMap?: ReadonlyMap<number, number>,
+	airingStateOverrides?: ReadonlyMap<number, boolean>,
 ): SortedCollection[] {
 	const airingMap = new Map<number, number>();
 	for (const day of calendar) {
@@ -154,6 +156,7 @@ export function sortCollections(
 			airedEpMap,
 			airingSignalMap,
 			nextAiringAtMap,
+			airingStateOverrides,
 		);
 		switch (meta.group) {
 			case "airing_not_caught":

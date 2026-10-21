@@ -11,10 +11,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient } from "@tanstack/react-query";
 import { GROUP_LABEL } from "../shared/sort-collections.ts";
 import { readCachedQueryMap } from "../src/api/query-map-cache.ts";
+import { setAiringOffsetDays } from "../src/api/airing-offset.ts";
+import { shiftAiringDate } from "../shared/airing-offset.ts";
+import { getTokyoDateKey } from "../shared/airing-schedule.ts";
 
 const root = new URL("../", import.meta.url);
 const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
-const globals = new Map(["sessionStorage", "window", "document"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+const globals = new Map(["sessionStorage", "localStorage", "window", "document"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 let directory;
 
 try {
@@ -31,6 +34,7 @@ try {
 		let replacement;
 		if (specifier === "react") replacement = mocksUrl;
 		else if (specifier === "../api/query-map-cache") replacement = new URL("src/api/query-map-cache.ts", root).href;
+		else if (specifier === "../hooks/useAiringOffsets") replacement = new URL("src/hooks/useAiringOffsets.ts", root).href;
 		else if (specifier.startsWith("@shared/") && !["@shared/api/client", "@shared/api/anilist", "@shared/storage/sqlite-cache"].includes(specifier)) {
 			replacement = new URL(specifier.replace("@shared/", "shared/") + ".ts", root).href;
 		} else {
@@ -45,9 +49,11 @@ try {
 	await writeFile(join(directory, "mocks.mjs"), `
 import React from ${JSON.stringify(import.meta.resolve("react"))};
 import { QueryObserver } from ${JSON.stringify(import.meta.resolve("@tanstack/react-query"))};
-export { Fragment, useMemo, useRef } from ${JSON.stringify(import.meta.resolve("react"))};
+export { Fragment, useMemo, useRef, useCallback } from ${JSON.stringify(import.meta.resolve("react"))};
 let client;
 let cachedSnapshot;
+let injectedCommitted;
+let committedInjected = false;
 let snapshotIndex = 0;
 let io = {};
 let locationState = null;
@@ -63,8 +69,12 @@ function callIO(name, args) {
   if (Object.hasOwn(io, name)) return io[name](...args);
   throw new Error("不应调用 IO: " + name);
 }
-export function configure(value, snapshot) { client = value; cachedSnapshot = snapshot; snapshotIndex = 0; }
+export function configure(value, snapshot, committed) { client = value; cachedSnapshot = snapshot; injectedCommitted = committed; committedInjected = false; snapshotIndex = 0; }
 export function useState(initial) {
+  if (initial === null && !committedInjected) {
+    committedInjected = true;
+    if (injectedCommitted) initial = injectedCommitted;
+  }
   if (initial?.key === "" && initial?.complete === false && snapshotIndex++ === 0 && cachedSnapshot) initial = cachedSnapshot;
   return React.useState(initial);
 }
@@ -92,6 +102,13 @@ ${[...mockExports].filter((name) => !implemented.has(name)).map((name) => `expor
 	configure(client);
 	const { default: CollectionsPage } = await import(pathToFileURL(join(directory, "CollectionsPage.mjs")).href);
 	Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: () => null } });
+	const preferences = new Map();
+	Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+		getItem: (key) => preferences.get(key) ?? null,
+		setItem: (key, value) => preferences.set(key, String(value)),
+		removeItem: (key) => preferences.delete(key),
+	} });
+	Object.defineProperty(globalThis, "window", { configurable: true, value: Object.assign(new EventTarget(), { localStorage: globalThis.localStorage }) });
 
 	const subject = (id) => ({ id, type: 2, name: `Subject ${id}`, name_cn: `条目 ${id}`, date: "2000-01-01", eps: 12, total_episodes: 12 });
 	const collection = (id) => ({ subject_id: id, type: 3, ep_status: 1, subject: subject(id) });
@@ -104,8 +121,8 @@ ${[...mockExports].filter((name) => !implemented.has(name)).map((name) => `expor
 		client.setQueryData(["anilist-airing-times-v2", ids.join(",")], records);
 		client.setQueryData(["episodes-schedule-v2", ids.join(",")], new Map(ids.map((id) => [id, episodes])));
 	};
-	const renderGroups = (snapshot) => {
-		configure(client, snapshot);
+	const renderGroups = (snapshot, committed) => {
+		configure(client, snapshot, committed);
 		const html = renderToStaticMarkup(React.createElement(CollectionsPage));
 		assert.match(html, /data-subject-id="8"/, "应保留未修改条目");
 		return Object.entries(GROUP_LABEL).filter(([, label]) => html.includes(label)).map(([key]) => key);
@@ -150,6 +167,60 @@ ${[...mockExports].filter((name) => !implemented.has(name)).map((name) => `expor
 	assert.equal(readCachedQueryMap(client, [["map-fixture"]], [9]), undefined);
 	assert.equal(readCachedQueryMap(client, [["different-scope"]], [7]), undefined);
 	assert.deepEqual(client.getQueryData(["map-fixture", "7,8"]), new Map([[7, "old"], [8, "untouched"]]));
+	// 直接通过实际页面固定 AniList 深夜观测：+1 天不能被 dayOffset 从1变0抵消。
+	const originalNow = Date.now;
+	try {
+		Date.now = () => Date.parse("2026-07-13T03:00:00+09:00");
+		client.clear();
+		client.setQueryData(["calendar"], [{ weekday: { id: 7 }, items: [subject(8)] }]);
+		client.setQueryData(collectionsKey, page([{ ...collection(8), ep_status: 0 }]));
+		const lateRecords = new Map([[8, { status: "scheduled", airingAt: Date.parse("2026-07-13T01:00:00+09:00") / 1000, episode: 1, fetchedAt: Date.now() }]]);
+		client.setQueryData(["anilist-airing-times-cache-v2", "8"], lateRecords);
+		client.setQueryData(["anilist-airing-times-v2", "8"], lateRecords);
+		client.setQueryData(["episodes-schedule-v2", "8"], new Map([[8, [{ ep: 1, type: 0, airdate: "2026-07-12" }]]]));
+		assert.deepEqual(renderGroups(), ["airing_not_caught"]);
+		setAiringOffsetDays(8, 1);
+		assert.deepEqual(renderGroups(), ["airing_caught"], "实际页面必须延后到7月14日01:00，而非仍在7月13日01:00");
+		setAiringOffsetDays(8, 0);
+		assert.deepEqual(renderGroups(), ["airing_not_caught"]);
+	} finally { Date.now = originalNow; }
+
+	// 实际页面使用持久化偏置：无网络/无 AniList 精确时间时，缓存首帧也必须修正。
+	client.clear();
+	client.setQueryData(["calendar"], [{ weekday: { id: 5 }, items: [subject(8)] }]);
+	client.setQueryData(collectionsKey, page([collection(8)]));
+	seedSchedule([8]);
+	const rawSchedule = [
+		{ ep: 1, sort: 1, type: 0, airdate: shiftAiringDate(getTokyoDateKey(Date.now()), -10) },
+		{ ep: 2, sort: 2, type: 0, airdate: shiftAiringDate(getTokyoDateKey(Date.now()), 3) },
+	];
+	client.setQueryData(["episodes-schedule-v2", "8"], new Map([[8, rawSchedule]]));
+	assert.deepEqual(renderGroups(), ["airing_caught"]);
+	const oldNetworkSnapshot = {
+		scopeKey: "fixture-user:3", version: "old-network", airingOffsetsVersion: "{}", source: "network",
+		sorted: [{ collection: collection(8), group: "airing_caught", weekday: 5, airedEp: 1 }],
+		displayLabelMap: new Map([[8, "旧快照"]]), justUpdatedSubjectIds: new Set(),
+	};
+	let releaseNetwork;
+	const networkPending = client.fetchQuery({ queryKey: collectionsKey, staleTime: 0, queryFn: () => new Promise((resolve) => { releaseNetwork = resolve; }) });
+	setAiringOffsetDays(8, -7);
+	assert.deepEqual(renderGroups(undefined, oldNetworkSnapshot), ["airing_not_caught"], "保存后不能因网络旧快照而延迟应用偏置");
+	configure(client, undefined, oldNetworkSnapshot);
+	const correctedHtml = renderToStaticMarkup(React.createElement(CollectionsPage));
+	assert.match(correctedHtml, /手动提前7天/);
+	assert.doesNotMatch(correctedHtml, /旧快照/);
+	assert.equal(rawSchedule[1].airdate, shiftAiringDate(getTokyoDateKey(Date.now()), 3));
+	client.setQueryData(["episodes-schedule-v2", "8"], new Map([[8, structuredClone(rawSchedule)]]));
+	assert.deepEqual(renderGroups(), ["airing_not_caught"], "新的原始网络数据不能抹掉本地修正");
+	// 模拟切换走再返回（React 树每次重新挂载），并恢复默认。
+	assert.deepEqual(renderGroups(), ["airing_not_caught"]);
+	setAiringOffsetDays(8, 0);
+	assert.deepEqual(renderGroups(), ["airing_caught"]);
+	releaseNetwork(page([collection(8)]));
+	await networkPending;
+	client.clear();
+	client.setQueryData(["calendar"], [{ weekday: { id: 5 }, items: [subject(8)] }]);
+	seedSchedule([8]);
 	// 真正执行页面的 queryFn：SQLite 读取被挂起时，worker 已提交更新且队列已清空。
 	client.setQueryData(collectionsKey, page([{ ...collection(8), ep_status: 3 }]));
 	renderGroups();

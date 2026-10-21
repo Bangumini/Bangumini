@@ -40,6 +40,9 @@ import {
 	writeCachedRelations,
 	writeCachedSubject,
 } from "@shared/storage/sqlite-cache";
+import { applySubjectAiringOffset } from "@shared/airing-offset";
+import AiringOffsetControl from "../components/AiringOffsetControl";
+import { useAiringOffsets } from "../hooks/useAiringOffsets";
 import CachedImage from "../components/CachedImage";
 import SyncQueueDock from "../components/SyncQueueDock";
 import CornerStack from "../components/CornerStack";
@@ -81,11 +84,10 @@ function getAirWeekdayLabel(airWeekday?: number, date?: string) {
 	const match = date?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
 	if (!match) return null;
 
-	const [, year, month, day] = match;
+	const parsedDate = new Date(`${date}T00:00:00Z`);
+	if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) return null;
 	const jsWeekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-	return jsWeekdays[
-		new Date(Number(year), Number(month) - 1, Number(day)).getDay()
-	];
+	return jsWeekdays[parsedDate.getUTCDay()];
 }
 import { getUsername } from "../api/oauth";
 import { ChevronLeftIcon } from "../components/icons";
@@ -234,6 +236,8 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 	const location = useLocation();
 	const queryClient = useQueryClient();
 	const crossSeasonCount = isCrossSeasonCountEnabled();
+	const airingOffsets = useAiringOffsets();
+	const airingOffsetDays = airingOffsets[subjectId] ?? 0;
 	const [targetEp, setTargetEp] = useState<number | null>(null);
 	const [paletteOpen, setPaletteOpen] = useState(false);
 	const [paletteIndex, setPaletteIndex] = useState(0);
@@ -628,10 +632,12 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 	const displayedCurrentEp = currentEp + episodeOffset;
 	const displayedTargetEp = displayTarget + episodeOffset;
 	const isDirty = targetEp !== null && targetEp !== currentEp;
-	const airWeekdayLabel = getAirWeekdayLabel(
-		subject?.air_weekday,
-		subject?.date,
-	);
+	const originalAirWeekdayLabel = getAirWeekdayLabel(subject?.air_weekday, subject?.date);
+	// 仅生成展示投影，不改动 Query cache 或持久化的 API 数据。
+	const airingSubject = subject?.type === 2
+		? applySubjectAiringOffset(subject, airingOffsetDays)
+		: subject;
+	const airWeekdayLabel = getAirWeekdayLabel(airingSubject?.air_weekday, airingSubject?.date);
 
 	const copyText = useCallback(async (text: string) => {
 		await navigator.clipboard.writeText(text);
@@ -826,6 +832,13 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 	// Global keyboard shortcuts
 	useKeyboardShortcuts(
 		[
+			{
+				// window capture 先于 React 事件，必须在这里跳过页面全局动作。
+				// 不 preventDefault/stopPropagation，保留 input/button 的原生键盘行为。
+				when: ({ target }) => Boolean(target?.closest("[data-airing-offset-control]")),
+				preventDefault: false,
+				handler: () => {},
+			},
 			{
 				key: "o",
 				mod: true,
@@ -1233,16 +1246,23 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 
 						{subject?.date && (
 							<div>
-								<span className="text-fg-tertiary">放送 </span>
+								<span className="text-fg-tertiary">{subject.type === 2 ? "Bangumi 原始放送 " : "放送 "}</span>
 								<span
 									className="text-fg-secondary cursor-pointer hover:text-accent transition-colors"
 									onClick={() => copyText(subject.date)}
 								>
 									{subject.date}
 								</span>
-								{airWeekdayLabel ? (
-									<span className="text-fg-tertiary ml-1">({airWeekdayLabel})</span>
+								{originalAirWeekdayLabel ? (
+									<span className="text-fg-tertiary ml-1">({originalAirWeekdayLabel})</span>
 								) : null}
+							</div>
+						)}
+						{subject?.type === 2 && airingOffsetDays !== 0 && (
+							<div>
+								<span className="text-fg-tertiary">修正后放送 </span>
+								<span className="text-accent">{airingSubject?.date || "暂无日期，无法推算"}</span>
+								{airWeekdayLabel && <span className="text-fg-secondary ml-1">({airWeekdayLabel})</span>}
 							</div>
 						)}
 
@@ -1309,6 +1329,16 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 							</div>
 						)}
 					</div>
+					{subject?.type === 2 && (
+						<AiringOffsetControl
+							key={subjectId}
+							subjectId={subjectId}
+							appliedDays={airingOffsetDays}
+							originalDate={subject.date}
+							airWeekday={subject.air_weekday}
+							previewEpisode={mainEps.find((episode) => Boolean(episode.airdate))}
+						/>
+					)}
 				</div>
 			</div>
 

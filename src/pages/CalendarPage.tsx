@@ -4,6 +4,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { getCalendar } from "@shared/api/client";
 import type { CalendarItem } from "@shared/api/types";
+import { applyCalendarAiringOffsets, formatAiringOffsetDays } from "@shared/airing-offset";
+import { useAiringOffsets } from "../hooks/useAiringOffsets";
 import {
 	readCachedValueEntry,
 	readCachedValueWithLegacy,
@@ -45,6 +47,7 @@ export default function CalendarPage() {
 	const location = useLocation();
 	const queryClient = useQueryClient();
 	const colTypeMap = useCollectionStatusMap();
+	const airingOffsets = useAiringOffsets();
 	const [searchParams] = useSearchParams();
 	const today = getTodayBangumiWeekday();
 
@@ -75,7 +78,7 @@ export default function CalendarPage() {
 	const isFiltering = filterText !== "" || filterWeekday !== "";
 
 	const {
-		data: calendar,
+		data: rawCalendar,
 		isLoading,
 		error,
 	} = useQuery({
@@ -108,6 +111,11 @@ export default function CalendarPage() {
 		gcTime: 10 * 60 * 1000,
 		refetchOnWindowFocus: true,
 	});
+
+	const calendar = useMemo(
+		() => rawCalendar && applyCalendarAiringOffsets(rawCalendar, airingOffsets),
+		[rawCalendar, airingOffsets],
+	);
 
 	// Build flat list of all items with their weekday context
 	const allItems = useMemo(() => {
@@ -155,6 +163,10 @@ export default function CalendarPage() {
 	const displayItems = isFiltering
 		? filteredItems
 		: (currentDayData?.items ?? []);
+
+	// 条目在详情中移动到其他星期后，返回页不能保留越界焦点。
+	const lastVisibleIndex = Math.max(0, displayItems.length - 1);
+	if (calendar && focusedIndex > lastVisibleIndex) setFocusedIndex(lastVisibleIndex);
 
 	// Clear navigation state after returning from detail
 	useEffect(() => {
@@ -353,6 +365,9 @@ export default function CalendarPage() {
 																		{CollectionTypeLabel[colTypeMap.get(s.id)!]}
 																	</Tag>
 																)}
+																{Boolean(airingOffsets[s.id]) && (
+																	<Tag>手动{formatAiringOffsetDays(airingOffsets[s.id])}</Tag>
+																)}
 																{s.rating?.score ? (
 																	<Rating score={s.rating.score} />
 																) : null}
@@ -429,6 +444,9 @@ export default function CalendarPage() {
 													<Tag>
 														{CollectionTypeLabel[colTypeMap.get(s.id)!]}
 													</Tag>
+												)}
+												{Boolean(airingOffsets[s.id]) && (
+													<Tag>手动{formatAiringOffsetDays(airingOffsets[s.id])}</Tag>
 												)}
 												{s.rating?.score ? (
 													<Rating score={s.rating.score} />

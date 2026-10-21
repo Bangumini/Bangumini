@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo, useEffect, useRef } from "react";
+import { Fragment, useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -27,6 +27,15 @@ import {
 	type AiringObservation,
 	type AiringSchedule,
 } from "@shared/airing-schedule";
+import {
+	applyCalendarAiringOffsets,
+	applyCollectionAiringOffsets,
+	applyEpisodeAiringOffset,
+	deriveManualAiringStates,
+	formatAiringOffsetDays,
+	type AiringOffsets,
+} from "@shared/airing-offset";
+import { useAiringOffsets } from "../hooks/useAiringOffsets";
 import {
 	sortCollections,
 	getDisplayLabel,
@@ -118,6 +127,7 @@ type CollectionsLocationState = {
 type CommittedCollectionsState = {
 	scopeKey: string;
 	version: string;
+	airingOffsetsVersion: string;
 	source: DataSource;
 	sorted: SortedCollection[];
 	displayLabelMap: Map<number, string | null>;
@@ -488,16 +498,20 @@ function deriveAiringMaps(
 	observationMap: Map<number, AiringObservation>,
 	airingMap: Map<number, number>,
 	nowMs: number,
+	offsets: AiringOffsets,
 ) {
 	const scheduleMap = new Map<number, AiringSchedule>();
 	const airedEpMap = new Map<number, number>();
 	const nextAiringAtMap = new Map<number, number>();
 	const latestAiringAtMap = new Map<number, number>();
 
-	for (const [subjectId, episodes] of episodeListMap) {
+	for (const [subjectId, rawEpisodes] of episodeListMap) {
+		const offsetDays = offsets[subjectId] ?? 0;
+		const episodes = applyEpisodeAiringOffset(rawEpisodes, offsetDays);
 		const observation = observationMap.get(subjectId);
+		// 先按原始轨识别 24/25 点跨日，再平移日期；否则 +1 天可能被跨日推断抵消。
 		const schedule = observation
-			? deriveAiringSchedule(airingMap.get(subjectId), episodes, observation)
+			? deriveAiringSchedule(airingMap.get(subjectId), rawEpisodes, observation)
 			: null;
 		if (schedule) scheduleMap.set(subjectId, schedule);
 		airedEpMap.set(subjectId, deriveAiredEpisodeCount(episodes, schedule, nowMs));
@@ -599,6 +613,8 @@ export default function CollectionsPage() {
 	const location = useLocation();
 	const queryClient = useQueryClient();
 	const [searchParams] = useSearchParams();
+	const airingOffsets = useAiringOffsets();
+	const airingOffsetsVersion = JSON.stringify(airingOffsets);
 
 	const collectionType = searchParams.get("type") ?? "3";
 	const searchText = searchParams.get("filter") ?? "";
@@ -1066,6 +1082,14 @@ export default function CollectionsPage() {
 	});
 
 	const rawCollections = collData?.data ?? EMPTY_COLLECTIONS;
+	const effectiveCollections = useMemo(
+		() => applyCollectionAiringOffsets(rawCollections, airingOffsets),
+		[rawCollections, airingOffsets],
+	);
+	const effectiveCalendar = useMemo(
+		() => calendar && applyCalendarAiringOffsets(calendar, airingOffsets),
+		[calendar, airingOffsets],
+	);
 
 	const airingMap = useMemo(() => buildAiringMap(calendar), [calendar]);
 
@@ -1087,13 +1111,16 @@ export default function CollectionsPage() {
 	} = useQuery({
 		queryKey: ["anilist-airing-times-cache-v2", airingTimeCacheKey],
 		queryFn: () => readCachedAiringRecords(airingTimeCacheIds),
-		placeholderData: () =>
-			readCachedQueryMap<AiringCacheRecord>(
+		// Map 不支持结构共享；稳定工厂引用，避免请求挂起时反复生成 placeholder 并触发渲染循环。
+		placeholderData: useCallback(
+			() => readCachedQueryMap<AiringCacheRecord>(
 				queryClient,
 				[["anilist-airing-times-cache-v2"], ["anilist-airing-times-v2"]],
 				airingTimeCacheIds,
 				(record) => record.fetchedAt,
 			),
+			[queryClient, airingTimeCacheIds],
+		),
 		enabled: shouldReadAiringTimeCache,
 		staleTime: 5 * 60 * 1000,
 		refetchOnWindowFocus: true,
@@ -1156,13 +1183,15 @@ export default function CollectionsPage() {
 		isFetching: isAiringTimeFetching,
 	} = useQuery({
 		queryKey: ["anilist-airing-times-v2", airingTimeTargetKey],
-		placeholderData: () =>
-			readCachedQueryMap<AiringCacheRecord>(
+		placeholderData: useCallback(
+			() => readCachedQueryMap<AiringCacheRecord>(
 				queryClient,
 				[["anilist-airing-times-cache-v2"], ["anilist-airing-times-v2"]],
 				airingTimeTargets.map((item) => item.subjectId),
 				(record) => record.fetchedAt,
 			),
+			[queryClient, airingTimeTargets],
+		),
 		queryFn: async () => {
 			const map = readCachedQueryMap<AiringCacheRecord>(
 				queryClient,
@@ -1252,12 +1281,14 @@ export default function CollectionsPage() {
 		isFetching: isEpisodeFetching,
 	} = useQuery({
 		queryKey: episodesQueryKey,
-		placeholderData: () =>
-			readCachedQueryMap<Episode[]>(
+		placeholderData: useCallback(
+			() => readCachedQueryMap<Episode[]>(
 				queryClient,
 				[["episodes-schedule-v2"]],
 				allEpisodeIds,
 			),
+			[queryClient, allEpisodeIds],
+		),
 		queryFn: async () => {
 			if (allEpisodeIds.length === 0) {
 				return new Map<number, Episode[]>();
@@ -1348,8 +1379,8 @@ export default function CollectionsPage() {
 	const episodeListMap = episodeMap ?? EMPTY_EPISODE_LIST_MAP;
 	const derivedAiringData = useMemo(
 		() =>
-			deriveAiringMaps(episodeListMap, airingObservationMap, airingMap, nowMs),
-		[episodeListMap, airingObservationMap, airingMap, nowMs],
+			deriveAiringMaps(episodeListMap, airingObservationMap, airingMap, nowMs, airingOffsets),
+		[episodeListMap, airingObservationMap, airingMap, nowMs, airingOffsets],
 	);
 	const airedEpMap = derivedAiringData.airedEpMap;
 	const nextAiringAtMap = derivedAiringData.nextAiringAtMap;
@@ -1387,25 +1418,29 @@ export default function CollectionsPage() {
 
 	const sorted = useMemo(() => {
 		if (isWatching) {
-			if (!calendar) return EMPTY_SORTED;
+			if (!effectiveCalendar) return EMPTY_SORTED;
 			return sortCollections(
-				rawCollections,
-				calendar,
+				effectiveCollections,
+				effectiveCalendar,
 				today,
 				airedEpMap,
 				airingObservationMap,
 				nextAiringAtMap,
+				deriveManualAiringStates(rawCollections, episodeListMap, airedEpMap, airingOffsets),
 			);
 		}
-		return rawCollections.map((collection) => ({
+		return effectiveCollections.map((collection) => ({
 			collection,
 			group: "completed" as const,
 			weekday: 0,
 			airedEp: 0,
 		}));
 	}, [
+		effectiveCollections,
+		effectiveCalendar,
 		rawCollections,
-		calendar,
+		episodeListMap,
+		airingOffsets,
 		isWatching,
 		today,
 		airedEpMap,
@@ -1484,6 +1519,10 @@ export default function CollectionsPage() {
 	const cacheCollectionsData =
 		collData ?? (hasCollectionsSnapshot ? cachedCollectionsSnapshot.value : null);
 	const cacheRawCollections = cacheCollectionsData?.data ?? EMPTY_COLLECTIONS;
+	const cacheEffectiveCollections = useMemo(
+		() => applyCollectionAiringOffsets(cacheRawCollections, airingOffsets),
+		[cacheRawCollections, airingOffsets],
+	);
 	const cacheCalendar = useMemo(
 		() => {
 			if (!isWatching) return undefined;
@@ -1497,6 +1536,10 @@ export default function CollectionsPage() {
 			return calendar ?? [];
 		},
 		[isWatching, cachedCalendarSnapshot, calendar],
+	);
+	const cacheEffectiveCalendar = useMemo(
+		() => cacheCalendar && applyCalendarAiringOffsets(cacheCalendar, airingOffsets),
+		[cacheCalendar, airingOffsets],
 	);
 	const cacheAiringMap = useMemo(
 		() => buildAiringMap(cacheCalendar),
@@ -1520,8 +1563,9 @@ export default function CollectionsPage() {
 				cacheAiringObservationMap,
 				cacheAiringMap,
 				nowMs,
+				airingOffsets,
 			),
-		[cacheEpisodeListMap, cacheAiringObservationMap, cacheAiringMap, nowMs],
+		[cacheEpisodeListMap, cacheAiringObservationMap, cacheAiringMap, nowMs, airingOffsets],
 	);
 	const cacheAiredEpMap = cacheDerivedAiringData.airedEpMap;
 	const cacheNextAiringAtMap = cacheDerivedAiringData.nextAiringAtMap;
@@ -1529,23 +1573,27 @@ export default function CollectionsPage() {
 	const cacheSorted = useMemo(() => {
 		if (isWatching) {
 			return sortCollections(
-				cacheRawCollections,
-				cacheCalendar ?? [],
+				cacheEffectiveCollections,
+				cacheEffectiveCalendar ?? [],
 				today,
 				cacheAiredEpMap,
 				cacheAiringObservationMap,
 				cacheNextAiringAtMap,
+				deriveManualAiringStates(cacheRawCollections, cacheEpisodeListMap, cacheAiredEpMap, airingOffsets),
 			);
 		}
-		return cacheRawCollections.map((collection) => ({
+		return cacheEffectiveCollections.map((collection) => ({
 			collection,
 			group: "completed" as const,
 			weekday: 0,
 			airedEp: 0,
 		}));
 	}, [
+		cacheEffectiveCollections,
+		cacheEffectiveCalendar,
 		cacheRawCollections,
-		cacheCalendar,
+		cacheEpisodeListMap,
+		airingOffsets,
 		isWatching,
 		today,
 		cacheAiredEpMap,
@@ -1607,6 +1655,7 @@ export default function CollectionsPage() {
 		: "cache";
 	const cacheCommittedVersion = [
 		committedScopeKey,
+		airingOffsetsVersion,
 		todayDateKey,
 		nowMs,
 		"cache",
@@ -1626,6 +1675,7 @@ export default function CollectionsPage() {
 	].join("|");
 	const committedVersion = [
 		committedScopeKey,
+		airingOffsetsVersion,
 		todayDateKey,
 		nowMs,
 		committedSource,
@@ -1670,6 +1720,7 @@ export default function CollectionsPage() {
 			if (
 				!shouldCommitSettledSnapshot &&
 				prev?.scopeKey === committedScopeKey &&
+				prev.airingOffsetsVersion === airingOffsetsVersion &&
 				prev.source === "network"
 			) {
 				return prev;
@@ -1680,6 +1731,7 @@ export default function CollectionsPage() {
 			return {
 				scopeKey: committedScopeKey,
 				version: nextVersion,
+				airingOffsetsVersion,
 				source: nextSource,
 				sorted: nextSorted,
 				displayLabelMap: nextDisplayLabelMap,
@@ -1687,6 +1739,7 @@ export default function CollectionsPage() {
 			};
 		});
 	}, [
+		airingOffsetsVersion,
 		cacheCommittedVersion,
 		cacheDisplayLabelMap,
 		cacheJustUpdatedSubjectIds,
@@ -1707,14 +1760,19 @@ export default function CollectionsPage() {
 			? {
 					scopeKey: committedScopeKey,
 					version: cacheCommittedVersion,
+					airingOffsetsVersion,
 					source: "cache",
 					sorted: cacheSorted,
 					displayLabelMap: cacheDisplayLabelMap,
 					justUpdatedSubjectIds: cacheJustUpdatedSubjectIds,
 				}
 			: null;
+	// 本地偏置变化时立即重算，不能继续展示尚在等待网络的旧提交快照。
 	const committedForScope =
-		committedState?.scopeKey === committedScopeKey ? committedState : null;
+		committedState?.scopeKey === committedScopeKey &&
+		committedState.airingOffsetsVersion === airingOffsetsVersion
+			? committedState
+			: null;
 	const shouldShowLiveCollectionState =
 		!isReconciliationPending &&
 		isDisplayDataAvailable &&
@@ -1723,6 +1781,7 @@ export default function CollectionsPage() {
 	const liveCollectionState: CommittedCollectionsState = {
 		scopeKey: committedScopeKey,
 		version: committedVersion,
+		airingOffsetsVersion,
 		source: committedSource,
 		sorted,
 		displayLabelMap,
@@ -2027,6 +2086,9 @@ export default function CollectionsPage() {
 											<Tag>刚更新</Tag>
 										)}
 										{label && <Tag>{label}</Tag>}
+										{Boolean(airingOffsets[s.id]) && (
+											<Tag>手动{formatAiringOffsetDays(airingOffsets[s.id])}</Tag>
+										)}
 											{(s.score ?? s.rating?.score) ? (
 												<Rating score={s.score ?? s.rating!.score} />
 											) : null}
