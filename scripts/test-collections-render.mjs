@@ -66,6 +66,7 @@ export const configureIO = (handlers) => { io = handlers; };
 export const getQueryOptions = (key) => queries.get(JSON.stringify(key));
 function callIO(name, args) {
   if (name === "useKeyboardShortcuts") return;
+  if (name === "useCacheRefreshPending") return false;
   if (Object.hasOwn(io, name)) return io[name](...args);
   throw new Error("不应调用 IO: " + name);
 }

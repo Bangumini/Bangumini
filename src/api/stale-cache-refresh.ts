@@ -1,6 +1,22 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
-const refreshInFlight = new Set<string>();
+const refreshInFlight = new WeakMap<QueryClient, Map<string, Promise<boolean>>>();
+const refreshListeners = new WeakMap<QueryClient, Set<() => void>>();
+
+export function hasCacheRefreshInFlight(client: QueryClient, keys: readonly string[]) {
+  return keys.some(key => refreshInFlight.get(client)?.has(key));
+}
+
+export function subscribeCacheRefresh(client: QueryClient, listener: () => void) {
+  let listeners = refreshListeners.get(client);
+  if (!listeners) { listeners = new Set(); refreshListeners.set(client, listeners); }
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function notifyRefresh(client: QueryClient) {
+  for (const listener of refreshListeners.get(client) ?? []) listener();
+}
 
 export function isCacheStale(updatedAt: number, maxAgeMs: number, now = Date.now()) {
   return now - updatedAt > maxAgeMs;
@@ -21,6 +37,7 @@ export function refreshQueryDataIfChanged<T>({
   currentData,
   refresh,
   hasLocalChanges,
+  mergeLatest,
 }: {
   queryClient: QueryClient;
   queryKey: QueryKey;
@@ -28,14 +45,25 @@ export function refreshQueryDataIfChanged<T>({
   currentData: T;
   refresh: () => Promise<T>;
   hasLocalChanges?: (liveData: T, originalData: T) => boolean;
-}): Promise<boolean> | null {
-  if (refreshInFlight.has(refreshKey)) return null;
-  refreshInFlight.add(refreshKey);
+  mergeLatest?: (nextData: T, liveData: T, originalData: T) => T;
+}): Promise<boolean> {
+  let pending = refreshInFlight.get(queryClient);
+  if (!pending) {
+    pending = new Map();
+    refreshInFlight.set(queryClient, pending);
+  }
+  const existing = pending.get(refreshKey);
+  // 每个调用者都能等待同一轮结束；切页重挂载不能误把去重请求当成已完成。
+  if (existing) return existing;
 
-  return refresh()
-    .then((nextData) => {
+  const task = refresh()
+    .then((result) => {
       const liveData = queryClient.getQueryData<T>(queryKey);
+      const nextData = mergeLatest && liveData !== undefined
+        ? mergeLatest(result, liveData, currentData)
+        : result;
       if (
+        !mergeLatest &&
         liveData !== undefined &&
         !isSamePayload(liveData, currentData) &&
         !isSamePayload(liveData, nextData) &&
@@ -57,6 +85,10 @@ export function refreshQueryDataIfChanged<T>({
       return false;
     })
     .finally(() => {
-      refreshInFlight.delete(refreshKey);
+      pending.delete(refreshKey);
+      notifyRefresh(queryClient);
     });
+  pending.set(refreshKey, task);
+  notifyRefresh(queryClient);
+  return task;
 }

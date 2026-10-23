@@ -96,20 +96,27 @@ async function runBrowser(address) {
 async function check(scenario, restart = false) {
   const result = await runBrowser(`${url}?scenario=${encodeURIComponent(scenario)}`);
   assert.equal(result.status, "passed", `${scenario}: ${JSON.stringify(result.detail)}`);
-  assert.ok(result.detail.pendingRequests > 0, "必须在网络请求未完成时验证交互");
-  assert.equal(result.detail.offlineVerified, true, "离线后也必须能切页、筛选并打开缓存详情");
+  const atomic = scenario.startsWith("atomic-") || scenario.startsWith("detail-");
+  if (atomic) {
+    assert.equal(result.detail.atomicVerified, true, "必须验证完整的两阶段显示序列");
+  } else {
+    assert.ok(result.detail.pendingRequests > 0, "必须在网络请求未完成时验证交互");
+    assert.equal(result.detail.offlineVerified, true, "离线后也必须能切页、筛选并打开缓存详情");
+  }
   assert.equal(result.detail.restored, restart, "重启必须复用持久化数据，而不是 Query 内存");
-  console.log(`PASS ${scenario}${restart ? " (restart)" : ""}: 筛选、Enter、返回、双击均不等待网络`);
+  console.log(`PASS ${scenario}${restart ? " (restart)" : ""}: ${atomic ? "缓存/网络两阶段提交" : "筛选、Enter、返回、双击均不等待网络"}`);
 }
 
+const supportedScenarios = ["complete", "missing-airing", "missing-episodes", "stale-airing", "atomic-cache", "atomic-network", "atomic-local", "atomic-failure", "atomic-unchanged", "atomic-reverse", "atomic-members", "atomic-shared", "detail-atomic", "detail-local"];
 try {
   const scenarios = process.argv.slice(2);
-  if (scenarios.length === 0) scenarios.push("complete", "missing-airing", "missing-episodes", "stale-airing");
+  if (scenarios.length === 0) scenarios.push(...supportedScenarios);
   for (const scenario of scenarios) {
-    assert.ok(["complete", "missing-airing", "missing-episodes", "stale-airing"].includes(scenario), `未知场景: ${scenario}`);
+    assert.ok(supportedScenarios.includes(scenario), `未知场景: ${scenario}`);
     await check(scenario);
   }
   if (scenarios.includes("stale-airing")) await check("stale-airing", true);
+  if (scenarios.includes("atomic-network")) await check("atomic-network", true);
 } finally {
   await server.close();
   await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

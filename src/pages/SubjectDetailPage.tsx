@@ -1,48 +1,13 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import {
-	getSubject,
-	getSubjectRelations,
-	getSubjectPersons,
-	getSubjectCharacters,
-	getEpisodes,
-	getUserCollection,
-} from "@shared/api/client";
 import { CollectionTypeLabel } from "@shared/api/types";
-import type {
-	CollectionType,
-	Episode,
-	PagedResponse,
-	SubjectRelation,
-	UserCollection,
-} from "@shared/api/types";
-import type { QueryClient } from "@tanstack/react-query";
-import {
-	deleteCachedCollection,
-	readCachedCharacters,
-	readCachedCharactersWithin,
-	readCachedCollection,
-	readCachedCollectionWithin,
-	readCachedEpisodes,
-	readCachedEpisodesWithin,
-	readCachedPersons,
-	readCachedPersonsWithin,
-	readCachedRelations,
-	readCachedRelationsWithin,
-	readCachedSubjectDeepWithin,
-	readCachedSubjectDeep,
-	writeCachedCharacters,
-	writeCachedCollection,
-	writeCachedEpisodes,
-	writeCachedPersons,
-	writeCachedRelations,
-	writeCachedSubject,
-} from "@shared/storage/sqlite-cache";
+import type { CollectionType } from "@shared/api/types";
 import { applySubjectAiringOffset } from "@shared/airing-offset";
 import AiringOffsetControl from "../components/AiringOffsetControl";
 import { useAiringOffsets } from "../hooks/useAiringOffsets";
+import { useSubjectDetailData } from "../hooks/useSubjectDetailData";
 import CachedImage from "../components/CachedImage";
 import SyncQueueDock from "../components/SyncQueueDock";
 import CornerStack from "../components/CornerStack";
@@ -60,12 +25,6 @@ import {
 	getOptimisticCollectionPatchForSubject,
 	type CollectionTask,
 } from "../api/collection-tasks";
-
-function isNotFoundError(error: unknown) {
-	return (
-		error instanceof Error && error.message.includes("Bangumi API error 404")
-	);
-}
 
 function getAirWeekdayLabel(airWeekday?: number, date?: string) {
 	const bangumiWeekdays = [
@@ -105,95 +64,11 @@ const COLLECTION_OPTIONS: {
 	{ type: 5, label: "抛弃", key: "5" },
 ];
 
-const DETAIL_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
 const SUMMARY_ORIGINAL_MARKER = "[简介原文]";
 
 type SummaryBlock =
 	| { type: "heading"; text: string }
 	| { type: "paragraph"; text: string };
-
-function hasSummary(subject: UserCollection["subject"] | null | undefined) {
-	return !!subject?.summary?.trim();
-}
-
-function normalizeForCompare(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(normalizeForCompare);
-	if (value && typeof value === "object") {
-		const source = value as Record<string, unknown>;
-		return Object.keys(source)
-			.sort()
-			.reduce<Record<string, unknown>>((acc, key) => {
-				acc[key] = normalizeForCompare(source[key]);
-				return acc;
-			}, {});
-	}
-	return value;
-}
-
-function arePayloadsEqual(left: unknown, right: unknown) {
-	try {
-		return (
-			JSON.stringify(normalizeForCompare(left)) ===
-			JSON.stringify(normalizeForCompare(right))
-		);
-	} catch {
-		return left === right;
-	}
-}
-
-function setQueryDataIfChanged<T>(
-	queryClient: QueryClient,
-	queryKey: readonly unknown[],
-	next: T,
-) {
-	const current = queryClient.getQueryData<T>(queryKey);
-	if (!arePayloadsEqual(current, next)) {
-		queryClient.setQueryData(queryKey, next);
-	}
-}
-
-const inFlightDetailRefreshes = new Set<string>();
-
-function refreshQueryInBackground<T>(
-	queryClient: QueryClient,
-	queryKey: readonly unknown[],
-	loadFresh: () => Promise<T>,
-) {
-	const refreshKey = JSON.stringify(queryKey);
-	if (inFlightDetailRefreshes.has(refreshKey)) return;
-	inFlightDetailRefreshes.add(refreshKey);
-
-	void (async () => {
-		try {
-			const next = await loadFresh();
-			setQueryDataIfChanged(queryClient, queryKey, next);
-		} catch {
-			// Keep showing the stale cached data if the refresh fails.
-		} finally {
-			inFlightDetailRefreshes.delete(refreshKey);
-		}
-	})();
-}
-
-function extractArtist(
-	infobox?: { key: string; value: string | { v: string }[] }[],
-): string | null {
-	if (!infobox) return null;
-	const artist = infobox.find((i) => i.key === "艺术家");
-	if (artist && typeof artist.value === "string") return artist.value;
-	const lyricist = infobox.find((i) => i.key === "作词");
-	const composer = infobox.find((i) => i.key === "作曲");
-	const parts: string[] = [];
-	if (lyricist && typeof lyricist.value === "string") parts.push(lyricist.value);
-	if (
-		composer &&
-		typeof composer.value === "string" &&
-		(parts.length === 0 || composer.value !== parts[0])
-	) {
-		parts.push(composer.value);
-	}
-	return parts.length > 0 ? parts.join(" / ") : null;
-}
 
 function getSummaryBlocks(summary: string): SummaryBlock[] {
 	const blocks: SummaryBlock[] = [];
@@ -243,261 +118,17 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 	const [paletteIndex, setPaletteIndex] = useState(0);
 	const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
 	const [collectionTasks, setCollectionTasks] = useState<CollectionTask[]>([]);
-	const [loadSecondaryDetailData, setLoadSecondaryDetailData] = useState(false);
-	const [loadEpisodeData, setLoadEpisodeData] = useState(false);
-	const initialEpStatus = useRef<number | null>(null);
 	const collectionChangedRef = useRef(false);
 	const isMounted = useRef(true);
 	const leftColumnRef = useRef<HTMLDivElement>(null);
-	const subjectQueryKey = ["subject", subjectId] as const;
-	const personsQueryKey = ["persons", subjectId] as const;
-	const charactersQueryKey = ["characters", subjectId] as const;
-	const episodesQueryKey = ["episodes", subjectId] as const;
-	const relationsQueryKey = ["relations", subjectId] as const;
-
-	async function fetchSubjectFromNetwork() {
-		const result = await getSubject(subjectId);
-		return writeCachedSubject(result);
-	}
-
-	async function fetchPersonsFromNetwork() {
-		const result = await getSubjectPersons(subjectId);
-		await writeCachedPersons(subjectId, result);
-		return result;
-	}
-
-	async function fetchCharactersFromNetwork() {
-		const result = await getSubjectCharacters(subjectId);
-		await writeCachedCharacters(subjectId, result);
-		return result;
-	}
-
-	async function fetchEpisodesFromNetwork() {
-		const result = await getEpisodes(subjectId);
-		await writeCachedEpisodes(subjectId, result);
-		return result;
-	}
-
-	async function loadEpisodesFromCacheOrNetwork() {
-		const cached = await readCachedEpisodesWithin(
-			subjectId,
-			DETAIL_CACHE_MAX_AGE,
-		);
-		if (cached) return cached;
-
-		const stale = await readCachedEpisodes(subjectId);
-		if (stale) {
-			refreshQueryInBackground(
-				queryClient,
-				episodesQueryKey,
-				fetchEpisodesFromNetwork,
-			);
-			return stale;
-		}
-
-		try {
-			return await fetchEpisodesFromNetwork();
-		} catch {
-			return readCachedEpisodes(subjectId);
-		}
-	}
-
-	async function ensureEpisodesLoaded() {
-		if (isMounted.current) setLoadEpisodeData(true);
-		const result =
-			await queryClient.ensureQueryData<PagedResponse<Episode> | null>({
-				queryKey: episodesQueryKey,
-				queryFn: loadEpisodesFromCacheOrNetwork,
-			});
-		return result;
-	}
-
-	async function loadRelations(subjectId: number) {
-		const cached = await readCachedRelationsWithin(
-			subjectId,
-			DETAIL_CACHE_MAX_AGE,
-		);
-		if (cached) return cached;
-
-		const stale = await readCachedRelations(subjectId);
-		if (stale) {
-			refreshQueryInBackground(queryClient, ["relations", subjectId], () =>
-				getSubjectRelations(subjectId).then((r) =>
-					writeCachedRelations(subjectId, r),
-				),
-			);
-			return stale;
-		}
-
-		try {
-			const relations = await getSubjectRelations(subjectId);
-			await writeCachedRelations(subjectId, relations);
-			return relations;
-		} catch {
-			return readCachedRelations(subjectId);
-		}
-	}
-
-	async function loadArtistMap(
-		relations: SubjectRelation[],
-	): Promise<Record<number, string | null>> {
-		const musicRelations = relations.filter((r) => r.type === 3);
-		const map: Record<number, string | null> = {};
-
-		const results = await Promise.allSettled(
-			musicRelations.map(async (r) => {
-				const cached = await readCachedSubjectDeep(r.id);
-				if (cached?.infobox) {
-					return { id: r.id, artist: extractArtist(cached.infobox) };
-				}
-				try {
-					const subject = await getSubject(r.id);
-					return { id: r.id, artist: extractArtist(subject.infobox) };
-				} catch {
-					return { id: r.id, artist: null };
-				}
-			}),
-		);
-
-		for (const result of results) {
-			if (result.status === "fulfilled") {
-				map[result.value.id] = result.value.artist;
-			}
-		}
-		return map;
-	}
-
-	const { data: subject } = useQuery({
-		queryKey: subjectQueryKey,
-		queryFn: async () => {
-			const cached = await readCachedSubjectDeepWithin(
-				subjectId,
-				DETAIL_CACHE_MAX_AGE,
-			);
-			if (cached) {
-				if (!hasSummary(cached)) {
-					refreshQueryInBackground(
-						queryClient,
-						subjectQueryKey,
-						fetchSubjectFromNetwork,
-					);
-				}
-				return cached;
-			}
-
-			const stale = await readCachedSubjectDeep(subjectId);
-			if (stale) {
-				refreshQueryInBackground(
-					queryClient,
-					subjectQueryKey,
-					fetchSubjectFromNetwork,
-				);
-				return stale;
-			}
-
-			try {
-				return fetchSubjectFromNetwork();
-			} catch {
-				return readCachedSubjectDeep(subjectId);
-			}
-		},
-	});
-
-	useEffect(() => {
-		if (!subject) return;
-
-		const timer = window.setTimeout(() => {
-			setLoadSecondaryDetailData(true);
-		}, 140);
-
-		return () => window.clearTimeout(timer);
-	}, [subject]);
-
-	useEffect(() => {
-		if (!subject) return;
-
-		const timer = window.setTimeout(() => {
-			setLoadEpisodeData(true);
-		}, 220);
-
-		return () => window.clearTimeout(timer);
-	}, [subject]);
-
-	const { data: persons } = useQuery({
-		queryKey: personsQueryKey,
-		enabled: loadSecondaryDetailData && Boolean(subject),
-		queryFn: async () => {
-			const cached = await readCachedPersonsWithin(
-				subjectId,
-				DETAIL_CACHE_MAX_AGE,
-			);
-			if (cached) return cached;
-
-			const stale = await readCachedPersons(subjectId);
-			if (stale) {
-				refreshQueryInBackground(
-					queryClient,
-					personsQueryKey,
-					fetchPersonsFromNetwork,
-				);
-				return stale;
-			}
-
-			try {
-				return fetchPersonsFromNetwork();
-			} catch {
-				return readCachedPersons(subjectId);
-			}
-		},
-	});
-
-	const { data: characters } = useQuery({
-		queryKey: charactersQueryKey,
-		enabled: loadSecondaryDetailData && Boolean(subject),
-		queryFn: async () => {
-			const cached = await readCachedCharactersWithin(
-				subjectId,
-				DETAIL_CACHE_MAX_AGE,
-			);
-			if (cached) return cached;
-
-			const stale = await readCachedCharacters(subjectId);
-			if (stale) {
-				refreshQueryInBackground(
-					queryClient,
-					charactersQueryKey,
-					fetchCharactersFromNetwork,
-				);
-				return stale;
-			}
-
-			try {
-				return fetchCharactersFromNetwork();
-			} catch {
-				return readCachedCharacters(subjectId);
-			}
-		},
-	});
-
-	const { data: episodeData } = useQuery({
-		queryKey: episodesQueryKey,
-		enabled: Boolean(subject) && loadEpisodeData,
-		queryFn: loadEpisodesFromCacheOrNetwork,
-	});
-
-	const relationsQuery = useQuery({
-		queryKey: relationsQueryKey,
-		enabled: loadSecondaryDetailData && Boolean(subject),
-		queryFn: () => loadRelations(subjectId),
-	});
+	const detailData = useSubjectDetailData(subjectId, queryClient);
+	const { subject, collection, episodes: episodeData, persons, characters, relations, artistMap } = detailData;
 
 	const songGroups = useMemo(() => {
-		const relations = relationsQuery.data;
-		if (!relations) return null;
-		const ops: SubjectRelation[] = [];
-		const eds: SubjectRelation[] = [];
-		const osts: SubjectRelation[] = [];
-		const characterSongs: SubjectRelation[] = [];
+		const ops: typeof relations = [];
+		const eds: typeof relations = [];
+		const osts: typeof relations = [];
+		const characterSongs: typeof relations = [];
 		for (const r of relations) {
 			if (r.relation === "片头曲") ops.push(r);
 			else if (r.relation === "片尾曲") eds.push(r);
@@ -505,20 +136,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 			else if (r.relation === "角色歌") characterSongs.push(r);
 		}
 		return { ops, eds, osts, characterSongs };
-	}, [relationsQuery.data]);
-
-	const artistMapQuery = useQuery({
-		queryKey: ["relations-artists", subjectId, relationsQuery.dataUpdatedAt],
-		enabled: !!relationsQuery.data && relationsQuery.data.length > 0,
-		queryFn: () => loadArtistMap(relationsQuery.data!),
-		staleTime: DETAIL_CACHE_MAX_AGE,
-	});
-	const artistMap = useMemo(
-		() => artistMapQuery.data ?? {},
-		[artistMapQuery.data],
-	);
-
-	const collectionQueryKey = ["collection", subjectId] as const;
+	}, [relations]);
 
 	useEffect(() => {
 		isMounted.current = true;
@@ -542,63 +160,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 			window.removeEventListener(COLLECTION_TASK_QUEUE_EVENT, syncCollectionTasks);
 		};
 	}, []);
-
-	async function fetchCollectionFromNetwork() {
-		const uname = getUsername();
-		if (!uname) return null;
-
-		try {
-			const result = await getUserCollection(uname, subjectId);
-			if (initialEpStatus.current === null && result) {
-				initialEpStatus.current = result.ep_status;
-			}
-			await writeCachedCollection(uname, result);
-			setQueryDataIfChanged(queryClient, collectionQueryKey, result);
-			return result;
-		} catch (error) {
-			if (isNotFoundError(error)) {
-				await deleteCachedCollection(uname, subjectId);
-				setQueryDataIfChanged(queryClient, collectionQueryKey, null);
-				return null;
-			}
-			throw error;
-		}
-	}
-
-	const { data: collection } = useQuery({
-		queryKey: collectionQueryKey,
-		queryFn: async () => {
-			const uname = getUsername();
-			if (!uname) return null;
-
-			const cached = await readCachedCollectionWithin(
-				uname,
-				subjectId,
-				DETAIL_CACHE_MAX_AGE,
-			);
-			if (cached) {
-				if (initialEpStatus.current === null) {
-					initialEpStatus.current = cached.ep_status;
-				}
-				return cached;
-			}
-
-			const stale = await readCachedCollection(uname, subjectId);
-			if (stale) {
-				if (initialEpStatus.current === null) {
-					initialEpStatus.current = stale.ep_status;
-				}
-				void fetchCollectionFromNetwork().catch(() => {});
-				return stale;
-			}
-
-			try {
-				return await fetchCollectionFromNetwork();
-			} catch {
-				return readCachedCollection(uname, subjectId);
-			}
-		},
-	});
 
 	const sorted =
 		episodeData?.data?.slice().sort((a, b) => a.sort - b.sort) ?? [];
@@ -960,7 +521,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 				key: "ArrowRight",
 				when: ({ isInput }) => !isInput && totalEp > 0,
 				handler: () => {
-					void ensureEpisodesLoaded();
 					setTargetEp((prev) => Math.min(totalEp, (prev ?? currentEp) + 1));
 				},
 			},
@@ -968,7 +528,6 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 				key: "ArrowLeft",
 				when: ({ isInput }) => !isInput && totalEp > 0,
 				handler: () => {
-					void ensureEpisodesLoaded();
 					setTargetEp((prev) => Math.max(0, (prev ?? currentEp) - 1));
 				},
 			},
@@ -1071,7 +630,7 @@ function SubjectDetailContent({ subjectId }: { subjectId: number }) {
 						</section>
 					)}
 
-					{relationsQuery.data != null &&
+					{relations.length > 0 &&
 						songGroups &&
 						(Object.values(songGroups).some((g) => g.length > 0) ? (
 							<section>

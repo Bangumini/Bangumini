@@ -87,6 +87,33 @@ export function mergeCollectionPatchIntoList({
 	return removeCollection(data, subjectId);
 }
 
+/** 保留请求期间产生的本地收藏目标，同时接受服务端的新条目元数据。 */
+export function mergeConcurrentCollectionChanges({
+	data,
+	originalData,
+	liveData,
+	collectionType,
+}: {
+	data: PagedResponse<UserCollection>;
+	originalData: PagedResponse<UserCollection>;
+	liveData: PagedResponse<UserCollection>;
+	collectionType: CollectionType;
+}) {
+	const originalById = new Map(originalData.data.map((item) => [item.subject_id, item]));
+	const liveById = new Map(liveData.data.map((item) => [item.subject_id, item]));
+	let next = data;
+	for (const id of originalById.keys()) {
+		if (!liveById.has(id)) next = removeCollection(next, id);
+	}
+	for (const live of liveData.data) {
+		const original = originalById.get(live.subject_id);
+		if (original && original.type === live.type && original.ep_status === live.ep_status) continue;
+		next = mergeCollectionPatchIntoList({ data: next, subjectId: live.subject_id,
+			patch: { type: live.type, ep_status: live.ep_status }, collectionType, fallbackCollection: live });
+	}
+	return next;
+}
+
 export function hasCollectionStateChanged(
 	previous: readonly SortedCollection[],
 	next: readonly SortedCollection[],

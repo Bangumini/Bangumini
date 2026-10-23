@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
 	hasCollectionStateChanged,
 	mergeCollectionPatchIntoList,
+	mergeConcurrentCollectionChanges,
 	updateCollectionListForType,
 } from "../shared/collection-cache.ts";
 
@@ -80,5 +81,23 @@ const changedScheduleOnlySorted = [
 	{ collection: watching, group: "airing_not_caught", weekday: 5, airedEp: 3 },
 ];
 assert.equal(hasCollectionStateChanged(oldSorted, changedScheduleOnlySorted), false);
+
+const serverNewMetadata = { ...watching, subject: { ...watching.subject, name_cn: "新元数据" } };
+const mergedConcurrent = mergeConcurrentCollectionChanges({
+  data: page([serverNewMetadata, collection(9, 3, 0)]), originalData: watchingPage,
+  liveData: page([{ ...watching, ep_status: 3 }]), collectionType: 3,
+});
+assert.equal(mergedConcurrent.data[0].ep_status, 3);
+assert.equal(mergedConcurrent.data[0].subject.name_cn, "新元数据");
+assert.equal(mergedConcurrent.data.length, 2, "远端新增成员不能被本地进度投影误删");
+const movedConcurrent = mergeConcurrentCollectionChanges({
+  data: page([serverNewMetadata]), originalData: watchingPage, liveData: page([]), collectionType: 3,
+});
+assert.equal(movedConcurrent.data.length, 0, "本地移出的成员不能被旧响应重新加入");
+const addedConcurrent = mergeConcurrentCollectionChanges({
+  data: page([]), originalData: page([]), liveData: watchingPage, collectionType: 3,
+});
+assert.equal(addedConcurrent.data[0].subject_id, 7);
+assert.equal(watchingPage.data[0].ep_status, 2, "投影不能污染原始快照");
 
 console.log("collection cache: 全部通过 ✓");
