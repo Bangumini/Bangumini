@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 
 type ShortcutContext = {
   event: KeyboardEvent;
@@ -170,11 +170,13 @@ export function useKeyboardShortcuts(
   const capture = options.capture ?? false;
   const priority = options.priority ?? 0;
 
-  useEffect(() => {
+  // 回调和启用状态必须与可见 DOM 同次提交，不能等普通 effect 再切换。
+  // 否则筛选后立刻 Enter 会打开旧条目；也不能在 render 中写 ref，泄露未提交的并发结果。
+  useLayoutEffect(() => {
     shortcutsRef.current = shortcuts;
   }, [shortcuts]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!enabled) return;
     return registerKeyboardShortcuts(() => shortcutsRef.current, { capture, priority });
   }, [capture, enabled, priority]);

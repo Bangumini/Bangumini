@@ -15,13 +15,13 @@ const REACT_STUB = `// React 最小 stub（仅用于测试键盘分发逻辑）
 export function useRef(initial) {
   return { current: initial };
 }
-export function useEffect(effect, _deps) {
+export function useLayoutEffect(effect, _deps) {
   effect();
 }
 `;
 
 // ---------- 1. 加载真实 dispatch 模块（替换 react 导入为 stub） ----------
-const REACT_IMPORT = 'import { useEffect, useRef } from "react";';
+const REACT_IMPORT = 'import { useLayoutEffect, useRef } from "react";';
 const shortcutsSrc = readFileSync(
 	join(ROOT, "src/hooks/useKeyboardShortcuts.ts"),
 	"utf8",
@@ -33,7 +33,7 @@ if (!shortcutsSrc.includes(REACT_IMPORT)) {
 }
 const moduleSrc = shortcutsSrc.replace(
 	REACT_IMPORT,
-	'import { useEffect, useRef } from "./_react-stub.ts";',
+	'import { useLayoutEffect, useRef } from "./_react-stub.ts";',
 );
 const tmpDir = join(ROOT, "scripts/.kb-test-tmp");
 mkdirSync(tmpDir, { recursive: true });

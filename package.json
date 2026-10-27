@@ -7,12 +7,15 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types scripts/test-keyboard-dispatch.mjs && node --experimental-strip-types scripts/test-airing-schedule.mjs && node --experimental-strip-types scripts/test-airing-offset.mjs && node --experimental-strip-types scripts/test-airing-offset-settings.mjs && node --experimental-strip-types scripts/test-anilist-airing.mjs && node --experimental-strip-types scripts/test-anilist-next-season.mjs && node --experimental-strip-types scripts/test-subject-title-copy.mjs && node --experimental-strip-types scripts/test-oauth-refresh.mjs && node --experimental-strip-types scripts/test-stale-cache-refresh.mjs && node --experimental-strip-types scripts/test-collection-cache.mjs && node --experimental-strip-types scripts/test-manual-sync.mjs && node --experimental-strip-types scripts/test-collection-worker.mjs && node --experimental-strip-types scripts/test-collections-render.mjs && node scripts/test-subject-detail-two-phase.mjs",
+    "test": "node --experimental-strip-types scripts/test-keyboard-dispatch.mjs && node --experimental-strip-types scripts/test-keyboard-commit.mjs && node --experimental-strip-types scripts/test-airing-schedule.mjs && node --experimental-strip-types scripts/test-airing-offset.mjs && node --experimental-strip-types scripts/test-airing-offset-settings.mjs && node --experimental-strip-types scripts/test-anilist-airing.mjs && node --experimental-strip-types scripts/test-anilist-next-season.mjs && node --experimental-strip-types scripts/test-subject-title-copy.mjs && node --experimental-strip-types scripts/test-oauth-refresh.mjs && node --experimental-strip-types scripts/test-stale-cache-refresh.mjs && node --experimental-strip-types scripts/test-collection-cache.mjs && node --experimental-strip-types scripts/test-manual-sync.mjs && node --experimental-strip-types scripts/test-collection-worker.mjs && node --experimental-strip-types scripts/test-collections-render.mjs && node scripts/test-subject-detail-two-phase.mjs && npm run test:offset-sync",
+    "test:offset-sync": "node --experimental-strip-types scripts/test-airing-offset-accounts.mjs && node --experimental-strip-types scripts/test-airing-offset-sync-model.mjs && node --experimental-strip-types scripts/test-offset-sync-config-store.mjs && node --experimental-strip-types scripts/test-offset-sync-fetch.mjs && node --experimental-strip-types scripts/test-offset-sync-storage.mjs && node --experimental-strip-types scripts/test-airing-offset-sync-manager.mjs && node --experimental-strip-types scripts/test-airing-offset-sync-settings.mjs && node --experimental-strip-types scripts/test-airing-offset-sync-bootstrap.mjs && node scripts/test-offset-sync-browser-runtime.mjs",
     "test:startup": "node scripts/test-startup-interactions.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1157.0",
+    "@smithy/fetch-http-handler": "5.8.0",
     "@tailwindcss/vite": "^4.3.0",
     "@tanstack/react-query": "^5.100.11",
     "@tauri-apps/api": "^2.11.0",
@@ -26,7 +29,8 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.15.1",
-    "tailwindcss": "^4.3.0"
+    "tailwindcss": "^4.3.0",
+    "webdav": "5.11.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -39,6 +43,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
+    "jsdom": "26.1.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12"

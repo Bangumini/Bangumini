@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::Manager;
 mod auth_diagnostics;
+mod offset_sync;
 use auth_diagnostics::record_auth_event;
 use tauri_plugin_global_shortcut::{
     GlobalShortcutExt, Shortcut, ShortcutState as GsShortcutState,
@@ -84,11 +85,11 @@ struct ProxyConfig {
     password: Option<String>,
 }
 
-struct ProxyHolder {
+pub(crate) struct ProxyHolder {
     config: StdMutex<Option<ProxyConfig>>,
 }
 
-fn build_client_with_proxy(holder: &ProxyHolder) -> reqwest::Client {
+pub(crate) fn proxy_client_builder(holder: &ProxyHolder) -> reqwest::ClientBuilder {
     let mut builder = reqwest::Client::builder();
     let mut proxy_set = false;
 
@@ -123,7 +124,11 @@ fn build_client_with_proxy(holder: &ProxyHolder) -> reqwest::Client {
         }
     }
 
-    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+    builder
+}
+
+fn build_client_with_proxy(holder: &ProxyHolder) -> reqwest::Client {
+    proxy_client_builder(holder).build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// 将窗口带到前台：临时设为置顶（topmost）以绕过 Windows 前台锁定，
@@ -611,6 +616,12 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             auth_diagnostics::record_auth_diagnostic,
+            offset_sync::offset_sync_register_request,
+            offset_sync::offset_sync_cancel_request,
+            offset_sync::offset_sync_fetch,
+            offset_sync::offset_sync_credential_get,
+            offset_sync::offset_sync_credential_set,
+            offset_sync::offset_sync_credential_delete,
             fetch_proxy,
             start_oauth,
             wait_oauth_callback,
@@ -643,6 +654,8 @@ pub fn run() {
             app.manage(ShortcutHolder {
                 current: StdMutex::new(None),
             });
+
+            app.manage(offset_sync::OffsetSyncRequests::default());
 
             // Holder for proxy configuration
             app.manage(ProxyHolder {

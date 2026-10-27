@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -9,7 +9,6 @@ import {
 import {
   AUTH_INVALIDATED_EVENT,
   getAccessToken,
-  fetchAndCacheUsername,
   handleAuthInvalidated,
 } from "./api/oauth";
 import { recordAuthEvent } from "./api/auth-diagnostics";
@@ -27,6 +26,7 @@ import NextSeasonPage from "./pages/NextSeasonPage";
 import LoginPage from "./pages/LoginPage";
 import SettingsPage from "./pages/SettingsPage";
 import WindowPinToggle from "./components/WindowPinToggle";
+import AiringOffsetSyncBootstrap from "./components/AiringOffsetSyncBootstrap";
 
 setTokenProvider(getAccessToken);
 setAuthInvalidationHandler(handleAuthInvalidated);
@@ -40,7 +40,7 @@ function RequireAuth() {
 }
 
 export default function App() {
-  const { authLoading, authenticated, handleLogin } = useAuth();
+  const { authLoading, authenticated, username, sessionRevision, handleLogin } = useAuth();
 
   useEffect(() => {
     recordAuthEvent("session.started", {
@@ -51,11 +51,13 @@ export default function App() {
   }, []);
   const queryClient = useQueryClient();
 
+  const previousSession = useRef(sessionRevision);
   useEffect(() => {
-    if (authenticated) {
-      fetchAndCacheUsername().catch(() => {});
+    if (previousSession.current !== sessionRevision) {
+      previousSession.current = sessionRevision;
+      queryClient.clear();
     }
-  }, [authenticated]);
+  }, [sessionRevision, queryClient]);
 
   useEffect(() => {
     const clearQueryCache = () => queryClient.clear();
@@ -99,7 +101,7 @@ export default function App() {
   }
 
   return (
-    <>
+    <AiringOffsetSyncBootstrap authenticated={authenticated} username={username} sessionRevision={sessionRevision}>
       <WindowPinToggle />
       <Routes>
         <Route
@@ -124,6 +126,6 @@ export default function App() {
           <Route path="/subject/:id" element={<SubjectDetailPage />} />
         </Route>
       </Routes>
-    </>
+    </AiringOffsetSyncBootstrap>
   );
 }

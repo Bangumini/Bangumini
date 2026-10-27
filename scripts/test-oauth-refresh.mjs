@@ -350,6 +350,60 @@ export const recordAuthEvent = () => {};
     assert.equal(invalidations(), 0);
   });
 
+  await test("账号恢复的并发 /me 共用完整任务并发布无凭证通知", async ({ oauth, seed, expect, calls }) => {
+    seed({ expiry: Date.now() + 3600000 });
+    const started = deferred(), response = deferred();
+    expect(ME_URL, () => { started.resolve(); return response.promise; });
+    let changes = 0;
+    window.addEventListener(oauth.AUTH_CHANGED_EVENT, event => { assert.equal(event.detail, undefined); changes++; });
+    const first = oauth.fetchAndCacheUsername();
+    assert.strictEqual(oauth.fetchAndCacheUsername(), first);
+    await started.promise;
+    response.resolve(jsonResponse({ username: "Alice" }));
+    assert.equal(await first, "Alice");
+    assert.equal(oauth.getUsername(), "Alice");
+    assert.equal(changes, 1);
+    assert.equal(calls.length, 1);
+  });
+
+  await test("旧账号的 /me 响应不能覆盖新账号的缓存用户名", async ({ oauth, seed, expect, snapshot, storage }) => {
+    seed({ expiry: Date.now() + 3600000 });
+    const started = deferred(), response = deferred();
+    expect(ME_URL, () => { started.resolve(); return response.promise; });
+    const oldRevision = oauth.getAuthSessionRevision();
+    const old = oauth.fetchAndCacheUsername();
+    await started.promise;
+    seed({ token: "new-account-token", expiry: Date.now() + 3600000 });
+    storage.setItem("bangumi_username", "Bob");
+    const before = snapshot();
+    assert(oauth.getAuthSessionRevision() > oldRevision);
+    response.resolve(jsonResponse({ username: "Alice" }));
+    assert.equal(await old, "");
+    assert.deepEqual(snapshot(), before);
+    assert.equal(oauth.getUsername(), "Bob");
+  });
+
+  await test("退出期间迟到的 /me body 不得重新写入 username", async ({ oauth, seed, expect, snapshot }) => {
+    seed({ expiry: Date.now() + 3600000 });
+    const started = deferred(), body = deferred();
+    expect(ME_URL, { status: 200, ok: true, json: async () => { started.resolve(); return body.promise; } });
+    const pending = oauth.fetchAndCacheUsername();
+    await started.promise;
+    oauth.clearToken();
+    body.resolve({ username: "Alice" });
+    assert.equal(await pending, "");
+    assert.deepEqual(snapshot(), [null, null, null, null]);
+  });
+
+  await test("后台 /me 失败不抹掉离线账号，不更换会话版本", async ({ oauth, seed, expect }) => {
+    seed({ expiry: Date.now() + 3600000 });
+    const revision = oauth.getAuthSessionRevision();
+    expect(ME_URL, jsonResponse({}, 503));
+    assert.equal(await oauth.fetchAndCacheUsername(), "");
+    assert.equal(oauth.getUsername(), "test-user");
+    assert.equal(oauth.getAuthSessionRevision(), revision);
+  });
+
   console.log(`OAuth refresh: ${passed} 项回归测试全部通过 ✓`);
 } finally {
   for (const [name, descriptor] of originalGlobals) {

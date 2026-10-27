@@ -7,6 +7,7 @@ const EXPIRY_KEY = "bangumi_expires_at";
 const USERNAME_KEY = "bangumi_username";
 
 export const AUTH_INVALIDATED_EVENT = "bangumini:auth-invalidated";
+export const AUTH_CHANGED_EVENT = "bangumini:auth-changed";
 export const AUTH_REFRESH_REDIRECT_URI = "http://localhost:19840/callback";
 
 const CLIENT_ID = "bgm61886a103fe0672c1";
@@ -57,6 +58,14 @@ export class AuthenticationError extends Error {
 const fetchFn = isTauri() ? tauriFetch : fetch;
 let authSessionRevision = 0;
 let refreshInFlight: RefreshFlight | null = null;
+let profileInFlight: { revision: number; token: string | null; promise: Promise<string> } | null = null;
+
+/** 只暴露无凭证的会话版本，供账号本地状态恢复和订阅使用。 */
+export function getAuthSessionRevision(): number { return authSessionRevision; }
+
+function notifyAuthChanged() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+}
 
 export function isLoggedIn(): boolean {
   return !!localStorage.getItem(TOKEN_KEY);
@@ -142,6 +151,7 @@ export function setToken(token: string) {
   localStorage.removeItem(EXPIRY_KEY);
   localStorage.removeItem(USERNAME_KEY);
   localStorage.setItem(TOKEN_KEY, token.trim());
+  notifyAuthChanged();
 }
 
 export function clearToken(expectedToken?: string): boolean {
@@ -169,37 +179,44 @@ async function requestUsername(token: string): Promise<Response> {
   });
 }
 
-export async function fetchAndCacheUsername(): Promise<string> {
-  let token: string;
-  try {
-    token = await getAccessToken();
-  } catch {
-    return "";
-  }
+export function fetchAndCacheUsername(): Promise<string> {
+  const revision = authSessionRevision, token = localStorage.getItem(TOKEN_KEY);
+  if (profileInFlight?.revision === revision && profileInFlight.token === token) return profileInFlight.promise;
+  const flight = { revision, token, promise: requestCurrentUsername(revision) };
+  profileInFlight = flight;
+  void flight.promise.finally(() => { if (profileInFlight === flight) profileInFlight = null; }).catch(() => {});
+  return flight.promise;
+}
 
+async function requestCurrentUsername(revision: number): Promise<string> {
+  let token: string;
+  try { token = await getAccessToken(); } catch { return ""; }
+  const current = () => authSessionRevision === revision && localStorage.getItem(TOKEN_KEY) === token;
+  if (!current()) return "";
   try {
     let res = await requestUsername(token);
+    if (!current()) return "";
     if (res.status === 401) {
       recordAuthEvent("profile.unauthorized", {});
       const recovered = await handleAuthInvalidated(token);
-      if (!recovered) return "";
-
+      if (!recovered || authSessionRevision !== revision) return "";
       token = await getAccessToken();
+      if (!current()) return "";
       res = await requestUsername(token);
-      if (res.status === 401) {
-        clearToken(token);
-        return "";
-      }
+      if (!current()) return "";
+      if (res.status === 401) { clearToken(token); return ""; }
     }
     if (res.ok) {
-      recordAuthEvent("profile.succeeded", {});
-      const data = (await res.json()) as { username: string };
-      if (data.username) {
+      const data = (await res.json()) as { username?: unknown };
+      // /me 的旧响应或延迟 body 不能给新登录缓存上一账号的 username。
+      if (current() && typeof data?.username === "string" && data.username) {
+        recordAuthEvent("profile.succeeded", {});
         localStorage.setItem(USERNAME_KEY, data.username);
+        notifyAuthChanged();
         return data.username;
       }
     }
-  } catch { /* */ }
+  } catch { /* 保留缓存用户名，网络失败不阻止已有账号离线使用。 */ }
   return "";
 }
 

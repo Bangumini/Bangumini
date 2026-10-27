@@ -22,6 +22,7 @@ import {
 	setSkippedUpdateVersion,
 } from "../hooks/useAutoUpdateCheck";
 import ShortcutRecorder from "../components/ShortcutRecorder";
+import AiringOffsetSyncSettings from "../components/AiringOffsetSyncSettings";
 import { GithubIcon, ExternalIcon } from "../components/icons";
 
 type DistributionKind = "installer" | "portable";
@@ -311,6 +312,8 @@ export default function SettingsPage() {
 					生成
 				</p>
 			</section>
+
+			<AiringOffsetSyncSettings />
 
 			<section>
 				<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">

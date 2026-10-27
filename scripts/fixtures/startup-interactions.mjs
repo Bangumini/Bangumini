@@ -106,9 +106,10 @@ root.render(
 );
 
 const waitFor = async (predicate, label) => {
-  const deadline = Date.now() + 2000;
+  // 超时使用单调时钟，避免系统校时让等待早于 700ms 节流结束。
+  const deadline = performance.now() + 2000;
   while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(label);
+    if (performance.now() > deadline) throw new Error(label);
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 };
@@ -157,12 +158,12 @@ const text = () => document.body.innerText;
           else if (request.name === "getAiringAt") request.resolve({ status: "no_schedule" });
         }
       };
-      const checkpoint = Date.now() + 2300;
-      while (Date.now() < checkpoint) { drain(); await new Promise(resolve => setTimeout(resolve, 20)); }
+      const checkpoint = performance.now() + 2300;
+      while (performance.now() < checkpoint) { drain(); await new Promise(resolve => setTimeout(resolve, 20)); }
       if (visibleText() !== baseline) throw new Error("旧批次的相关请求仍挂起时已提交新增成员：" + JSON.stringify(frames));
       heldEpisode.resolve(page(episodes)); heldAiring.resolve({ status: "no_schedule" });
-      const deadline = Date.now() + 4000;
-      while (Date.now() < deadline) {
+      const deadline = performance.now() + 4000;
+      while (performance.now() < deadline) {
         drain(); await new Promise(resolve => setTimeout(resolve, 20));
         if (visibleText().includes("新成员") && !client.getQueryCache().getAll().some(q => q.state.fetchStatus === "fetching")) break;
       }

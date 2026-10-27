@@ -17,6 +17,8 @@
 
 **全局快捷键** — 默认 `Ctrl+Shift+B` 呼出/隐藏窗口。快捷键可在设置中自定义。
 
+**个人偏置同步** — 设置 → 同步（默认关闭），通过 WebDAV 或 S3 / R2 同步自己的日期偏置，与手机端互通；支持离线编辑和冲突选择，凭证存 Windows 系统凭证库。详见[配置与协议](docs/offset-sync-protocol.md)。
+
 
 ## 键盘操作
 
@@ -42,8 +44,8 @@
 
 ### 环境要求
 
-- [Node.js](https://nodejs.org/) 18+
-- [Rust](https://www.rust-lang.org/) 1.70+
+- [Node.js](https://nodejs.org/) 22.12+
+- [Rust](https://www.rust-lang.org/) 1.88+（Windows 原生凭证库依赖）
 - Windows：需安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/)（勾选「使用 C++ 的桌面开发」工作负载）
 
 ### 快速开始
