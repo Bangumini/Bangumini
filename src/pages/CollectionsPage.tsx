@@ -35,6 +35,37 @@ import {
 	formatAiringOffsetDays,
 	type AiringOffsets,
 } from "@shared/airing-offset";
+import {
+	AIRING_CACHE_PREFIX,
+	AIRING_REFRESH_MIN_INTERVAL,
+	airingForceWindow,
+	isAiringCacheRecord,
+	isSameAiringSchedule,
+	mergeAiringRecordMaps,
+	removeLegacyAiringRecord,
+	shouldRefreshAiringRecord,
+	type AiringCacheRecord,
+} from "@shared/airing-cache";
+import {
+	selectAiringSubjects,
+	buildAiringWeekdayMap,
+	type AiringTimeTarget,
+} from "@shared/airing-targets";
+import { diffCalendar } from "@shared/calendar-cache";
+import { getForcedRoundStart } from "@shared/cache-force";
+import {
+	diffCollectionList,
+	mergeConcurrentCollectionChanges,
+} from "@shared/collection-cache";
+import {
+	EPISODES_CACHE_MAX_AGE,
+	episodesForceWindow,
+	getEpisodeCacheKey,
+	isEpisodeScheduleCache,
+	shouldRefreshEpisodeRecord,
+	type EpisodeScheduleCache,
+} from "@shared/episodes-cache";
+import { isSameJsonPayload } from "@shared/payload-equality";
 import { useAiringOffsets } from "../hooks/useAiringOffsets";
 import { useCacheRefreshPending } from "../hooks/useCacheRefreshPending";
 import {
@@ -45,14 +76,9 @@ import {
 	GROUP_COLOR,
 } from "@shared/sort-collections";
 import type { SortedCollection } from "@shared/sort-collections";
-import {
-	mergeCollectionPatchIntoList,
-	mergeConcurrentCollectionChanges,
-} from "@shared/collection-cache";
+import { mergeCollectionPatchIntoList } from "@shared/collection-cache";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
-	deleteCachedValue,
-	deleteCachedValuesByPrefix,
 	readAllCachedCollections,
 	readCachedCollection,
 	readCachedSubjectDeep,
@@ -60,12 +86,14 @@ import {
 	readCachedValuesAllowStale,
 	readCachedValueWithLegacy,
 	readLegacyHttpCache,
+	deleteCachedCollection,
+	deleteCachedValue,
 	writeCachedCollection,
 	writeCachedSubjectPreviews,
 	writeCachedValue,
 } from "@shared/storage/sqlite-cache";
 import { getUsername } from "../api/oauth";
-import { refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
+import { beginCacheRefresh, refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
 import { readCachedQueryMap } from "../api/query-map-cache";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import {
@@ -80,12 +108,7 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
 const LIMIT = 20;
 const COLLECTIONS_CACHE_PREFIX = "collections-";
-const AIRING_CACHE_PREFIX = "anilist-airing-v2-";
-const EPISODES_CACHE_PREFIX = "episodes-schedule-v2-";
 const AIRING_REQUEST_DELAY = 700;
-const AIRING_NEGATIVE_CACHE_MAX_AGE = 1000 * 60 * 60 * 24;
-const AIRING_REFRESH_MIN_INTERVAL = 1000 * 60 * 5;
-const EPISODES_CACHE_MAX_AGE = 1000 * 60 * 30;
 const CLOCK_EPSILON_MS = 1000;
 const EMPTY_COLLECTIONS: UserCollection[] = [];
 const EMPTY_LOCAL_COLLECTIONS: ReadonlyMap<number, UserCollection | null> = new Map();
@@ -102,22 +125,6 @@ type QuerySourceStatus = DataSource | "pending" | "error" | "skip";
 type QuerySourceState = Partial<
 	Record<QuerySourceName, { key: string; source: DataSource }>
 >;
-type AiringCacheRecord =
-	| {
-			status: "scheduled";
-			airingAt: number;
-			episode: number;
-			fetchedAt: number;
-			retryAfter?: number;
-	  }
-	| {
-			status: "no_schedule" | "not_found";
-			fetchedAt: number;
-	  };
-type EpisodeScheduleCache = {
-	episodes: Episode[];
-	checkedAt: number;
-};
 type CollectionsLocationState = {
 	fromSubject?: boolean;
 	subjectId?: number;
@@ -165,6 +172,11 @@ function createLocalCacheGate(key: string) {
 	} };
 }
 
+// 提示只是反馈：原生桥不可用（或测试环境未注入）时不能让已完成的同步变成失败。
+function showToast(message: string, variant?: "error") {
+	void invoke("show_toast", variant ? { message, variant } : { message }).catch(() => {});
+}
+
 function getPageStateKey(collectionType: string, searchText: string) {
 	return `bangumini-collections-page-${collectionType}-${searchText}`;
 }
@@ -201,15 +213,7 @@ function writePageState(
 }
 
 function buildAiringMap(calendar: CalendarItem[] | undefined) {
-	const map = new Map<number, number>();
-	if (!calendar) return map;
-
-	for (const day of calendar) {
-		for (const item of day.items) {
-			map.set(item.id, day.weekday.id);
-		}
-	}
-	return map;
+	return buildAiringWeekdayMap(calendar);
 }
 
 function getQuerySourceStatus(
@@ -230,20 +234,6 @@ function getQuerySourceStatus(
 
 function hasNetworkSource(sources: QuerySourceStatus[]) {
 	return sources.some((source) => source === "network");
-}
-
-function isAiringCacheRecord(value: unknown): value is AiringCacheRecord {
-	if (!value || typeof value !== "object") return false;
-	const record = value as Partial<AiringCacheRecord>;
-	if (typeof record.fetchedAt !== "number") return false;
-	if (record.status === "not_found" || record.status === "no_schedule") {
-		return true;
-	}
-	return (
-		record.status === "scheduled" &&
-		typeof record.airingAt === "number" &&
-		typeof record.episode === "number"
-	);
 }
 
 function readLegacyAiringRecord(subjectId: number): AiringCacheRecord | null {
@@ -302,7 +292,11 @@ async function readCachedAiringRecords(subjectIds: number[]) {
 		let cached = cachedByKey.get(cacheKey);
 		if (!cached) {
 			cached = readLegacyAiringRecord(subjectId) ?? undefined;
-			if (cached) void writeCachedValue(cacheKey, cached).catch(() => {});
+			if (cached) {
+				void writeCachedValue(cacheKey, cached).catch(() => {});
+				// 迁移到 SQLite 后旧键即可删除，避免下次仍被当作权威记录。
+				removeLegacyAiringRecord(subjectId);
+			}
 		}
 		if (isAiringCacheRecord(cached)) {
 			// 过期缓存仍用于首屏分组，是否需要刷新交给后续网络查询判断。
@@ -310,21 +304,6 @@ async function readCachedAiringRecords(subjectIds: number[]) {
 		}
 	}
 	return map;
-}
-
-function shouldRefreshAiringRecord(
-	record: AiringCacheRecord | undefined,
-	now: number,
-) {
-	if (!record) return true;
-	if (record.status !== "scheduled") {
-		return now - record.fetchedAt > AIRING_NEGATIVE_CACHE_MAX_AGE;
-	}
-	const refreshAt = Math.max(
-		record.airingAt * 1000,
-		record.retryAfter ?? record.fetchedAt + AIRING_REFRESH_MIN_INTERVAL,
-	);
-	return now >= refreshAt;
 }
 
 function toAiringObservationMap(records: Map<number, AiringCacheRecord>) {
@@ -353,7 +332,6 @@ function getInfoboxAliases(subject: Awaited<ReturnType<typeof getSubject>>) {
 	return aliases;
 }
 
-type AiringTimeTarget = { subjectId: number; name: string; nameCn: string };
 const airingLookupsInFlight = new Map<number, ReturnType<typeof getAiringAt>>();
 
 function lookupAiringTime(item: AiringTimeTarget) {
@@ -503,20 +481,6 @@ function getBangumiWeekdayFromDateKey(dateKey: string) {
 	const [year, month, day] = dateKey.split("-").map(Number);
 	const jsDay = new Date(year, month - 1, day).getDay();
 	return jsDay === 0 ? 7 : jsDay;
-}
-
-function getEpisodeCacheKey(subjectId: number) {
-	return `${EPISODES_CACHE_PREFIX}${subjectId}`;
-}
-
-function isEpisodeScheduleCache(
-	value: EpisodeScheduleCache | null,
-): value is EpisodeScheduleCache {
-	return (
-		!!value &&
-		Array.isArray(value.episodes) &&
-		typeof value.checkedAt === "number"
-	);
 }
 
 const episodeSchedulesInFlight = new Map<number, Promise<Episode[]>>();
@@ -732,6 +696,9 @@ export default function CollectionsPage() {
 	const [isReconciliationPending, setIsReconciliationPending] = useState(
 		initialState.isReturningFromDetail,
 	);
+	const [isManualSyncing, setIsManualSyncing] = useState(false);
+	const manualSyncInFlight = useRef(false);
+	const endRefreshCalendar = useRef<(() => void) | null>(null);
 	const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
 	const isWatching = collectionType === "3";
 	const today = useMemo(
@@ -1202,49 +1169,19 @@ export default function CollectionsPage() {
 		refetchOnMount: shouldSuppressRefetch ? false : true,
 	});
 
-	const airingIds = useMemo(
-		() =>
-			rawCollections
-				.filter((item) => airingMap.has(item.subject_id))
-				.map((item) => item.subject_id),
-		[rawCollections, airingMap],
-	);
-
 	// 非日历且未看完的条目——拉取 AniList 数据以确认是否在播
 	// AniList nextAiringEpisode 是 isAiring 的二级判定信号
 	// 未开始看（ep_status === 0）的条目同样需要确认，否则在播但未收录
 	// 进 BGM 日历的条目会被误判为"完结 · 未观看"
-	const staleAiringIds = useMemo(
+	const airingSelection = useMemo(
 		() =>
-			isWatching
-				? rawCollections
-						.filter((item) => !airingMap.has(item.subject_id))
-						.filter((item) => {
-							const total = item.subject.eps || item.subject.total_episodes || 0;
-							return total === 0 || item.ep_status < total;
-						})
-						.map((item) => item.subject_id)
-				: [],
-		[rawCollections, airingMap, isWatching],
+			selectAiringSubjects(rawCollections, discoveryCalendar, {
+				watching: isWatching,
+			}),
+		[rawCollections, discoveryCalendar, isWatching],
 	);
-
-	const allEpisodeIds = useMemo(
-		() => [...new Set([...airingIds, ...staleAiringIds])],
-		[airingIds, staleAiringIds],
-	);
-
-	const airingTimeTargets = useMemo(() => {
-		if (!isWatching) return [];
-		if (airingIds.length === 0 && staleAiringIds.length === 0) return [];
-		const targetIds = new Set([...airingIds, ...staleAiringIds]);
-		return rawCollections
-			.filter((item) => targetIds.has(item.subject_id) && item.subject.name)
-			.map((item) => ({
-				subjectId: item.subject_id,
-				name: item.subject.name,
-				nameCn: item.subject.name_cn,
-			}));
-	}, [rawCollections, airingIds, staleAiringIds, isWatching]);
+	const allEpisodeIds = airingSelection.allEpisodeIds;
+	const airingTimeTargets = airingSelection.targets;
 
 	const airingTimeTargetKey = airingTimeTargets
 		.map((item) => item.subjectId)
@@ -1281,8 +1218,11 @@ export default function CollectionsPage() {
 			}
 			await localCacheGate.promise;
 			const now = getCurrentTimestamp();
+			const roundStart = getForcedRoundStart(airingForceWindow, now);
 			const targetsToRefresh = airingTimeTargets.filter((item) =>
-				shouldRefreshAiringRecord(map.get(item.subjectId), now),
+				shouldRefreshAiringRecord(map.get(item.subjectId), now, {
+					roundStart,
+				}),
 			);
 
 			for (const [index, item] of targetsToRefresh.entries()) {
@@ -1395,6 +1335,7 @@ export default function CollectionsPage() {
 			}
 
 			const now = getCurrentTimestamp();
+			const roundStart = getForcedRoundStart(episodesForceWindow, now);
 			const map = new Map<number, Episode[]>(
 				readCachedQueryMap<Episode[]>(
 					queryClient,
@@ -1411,7 +1352,7 @@ export default function CollectionsPage() {
 				const cached = cachedByKey.get(getEpisodeCacheKey(id)) ?? null;
 				if (isEpisodeScheduleCache(cached)) {
 					cachedBySubjectId.set(id, cached);
-					if (now - cached.checkedAt <= EPISODES_CACHE_MAX_AGE) {
+					if (!shouldRefreshEpisodeRecord(cached, now, { roundStart })) {
 						if (!map.has(id)) map.set(id, cached.episodes);
 						continue;
 					}
@@ -2005,19 +1946,266 @@ export default function CollectionsPage() {
 		});
 	}
 
-	const clearAiringCache = async () => {
-		await Promise.all([
-			deleteCachedValuesByPrefix(AIRING_CACHE_PREFIX),
-			deleteCachedValuesByPrefix(EPISODES_CACHE_PREFIX),
-		]);
-		queryClient.resetQueries({ queryKey: ["episodes-schedule-v2"] });
-		queryClient.resetQueries({ queryKey: ["anilist-airing-times-v2"] });
-		await queryClient.refetchQueries({ queryKey: ["episodes-schedule-v2"] });
-		await queryClient.refetchQueries({
-			queryKey: ["anilist-airing-times-v2"],
-		});
-		invoke("show_toast", { message: "播出时间已刷新" });
-	};
+	// Ctrl+R：以增量方式把其他端（网页/手机）的收藏与排期同步到本地。
+	// 先对比再写入：未变化的条目不重建、不落盘；失败的数据源单独报告，其余照常更新。
+	const runManualSync = useCallback(async () => {
+		if (!uname) return;
+		if (manualSyncInFlight.current) return;
+		manualSyncInFlight.current = true;
+		setIsManualSyncing(true);
+		// 整批刷新期间保持一次提交：收藏先到、日历后到时，列表不会先闪一帧旧排期。
+		const endRefresh = beginCacheRefresh(queryClient, collectionsCacheKey);
+		if (isWatching) {
+			endRefreshCalendar.current = beginCacheRefresh(queryClient, "calendar");
+		}
+
+		const failed: string[] = [];
+		let changedCollections = 0;
+		let removedCollections = 0;
+		let addedCollections = 0;
+		let calendarChanged = false;
+
+		try {
+			const tasks = (await getCollectionTaskQueue()).filter(
+				(task) => task.payload.username === uname,
+			);
+			const pendingSubjectIds = new Set(
+				tasks.map((task) => task.payload.subjectId),
+			);
+
+			// 强制语义要在发请求前就登记：页面里已挂载的 query 一旦被 refetch，
+			// queryFn 会立刻读取这个起点，晚一步登记就会退回常规新鲜度判断。
+			airingForceWindow.request();
+			episodesForceWindow.request();
+			const airingIds = airingSelection.allEpisodeIds;
+			const airingBefore = readCachedQueryMap<AiringCacheRecord>(
+				queryClient,
+				[["anilist-airing-times-v2"], ["anilist-airing-times-cache-v2"]],
+				airingIds,
+				(record) => record.fetchedAt,
+			);
+
+			// 三个数据源互不依赖，必须并发：串行会把用户可见的等待时间相加。
+			// 新增成员导致的 query key 变化由下一次渲染补齐（仍在同一个强制轮次内）。
+			const collectionsTask = (async () => {
+				// 1. 收藏列表：与页面读取共用同一套“网络 → 队列投影 → 并发保护”顺序。
+				try {
+					// 刷新起点必须在发请求之前取，否则请求期间的本地改动会被当成“服务端最新值”。
+					const baseline =
+						queryClient.getQueryData<PagedResponse<UserCollection>>(
+							collectionsQueryKey,
+						);
+					const networkResult =
+						collectionType === "3"
+							? await getAllUserCollections({ username: uname, type: 3 })
+							: await getUserCollections({
+									username: uname,
+									type: parseInt(collectionType),
+									limit: 100,
+								});
+					// 只有“在看”全量拉取才能推断条目已被其它端移出。
+					const complete = collectionType === "3";
+					const subjectType = Number(collectionType) as UserCollection["type"];
+					// 与常规拉取保持一致：服务端没给总集数时用本地详情补全，
+					// 否则“已看完”判断会退化成 total=0 而重新请求 AniList。
+					const networkData = networkResult.data.map((item) => ({
+						...item,
+						subject: { ...item.subject },
+					}));
+					await backfillTotalEpisodesFromCache(networkData);
+					const serverById = new Map(
+						networkData.map((item) => [item.subject_id, item]),
+					);
+					const cachedFallbacks = (
+						await Promise.all(
+							[...pendingSubjectIds].map((subjectId) =>
+								readCachedCollection(uname, subjectId),
+							),
+						)
+					).filter((item): item is UserCollection => item !== null);
+					let merged = mergePendingCollectionTasks({
+						data: { ...networkResult, data: networkData },
+						currentData: baseline,
+						tasks,
+						cachedCollections: cachedFallbacks,
+						username: uname,
+						collectionType: subjectType,
+					});
+					const liveDuringFetch =
+						queryClient.getQueryData<PagedResponse<UserCollection>>(
+							collectionsQueryKey,
+						);
+					// 请求期间 worker 可能已完成写入；迟到的服务端快照不能覆盖已确认的本地意图。
+					if (baseline && liveDuringFetch && liveDuringFetch !== baseline) {
+						merged = mergeConcurrentCollectionChanges({
+							data: merged,
+							originalData: baseline,
+							liveData: liveDuringFetch,
+							collectionType: subjectType,
+						});
+					}
+
+					const current =
+						queryClient.getQueryData<PagedResponse<UserCollection>>(
+							collectionsQueryKey,
+						) ?? baseline;
+					const diff = diffCollectionList(current, merged, { complete });
+					if (diff.changed) {
+						queryClient.setQueryData(collectionsQueryKey, diff.data);
+					}
+					changedCollections = diff.changedIds.length;
+					addedCollections = diff.addedIds.length;
+					removedCollections = diff.removedIds.length;
+
+					// 2. 只持久化“服务端值原样保留”的条目：乐观任务与并发本地更改都不落盘。
+					const persistable = diff.changedItems.filter((item) => {
+						if (pendingSubjectIds.has(item.subject_id)) return false;
+						const server = serverById.get(item.subject_id);
+						return server !== undefined && isSameJsonPayload(server, item);
+					});
+					if (persistable.length > 0) {
+						await Promise.all([
+							writeCachedSubjectPreviews(persistable.map((item) => item.subject)),
+							...persistable.map((item) => writeCachedCollection(uname, item)),
+						]);
+						for (const item of persistable) {
+							queryClient.setQueryData(["collection", item.subject_id], item);
+						}
+					}
+					// 只在服务端确实“没有这条收藏”时才删除本地行；
+					// 被其它端改到别的分类的条目，行里存的是新分类，必须保留。
+					const removedCandidates = diff.removedIds.filter(
+						(subjectId) => !pendingSubjectIds.has(subjectId),
+					);
+					if (removedCandidates.length > 0) {
+						const removedCached = await Promise.all(
+							removedCandidates.map((subjectId) =>
+								readCachedCollection(uname, subjectId),
+							),
+						);
+						const reallyRemoved = removedCandidates.filter(
+							(_subjectId, index) =>
+								(removedCached[index]?.type ?? subjectType) === subjectType,
+						);
+						await Promise.all(
+							reallyRemoved.map((subjectId) =>
+								deleteCachedCollection(uname, subjectId),
+							),
+						);
+					}
+					if (diff.changed) {
+						// 快照只写服务端确认值：内存里的乐观投影不能变成“已确认”缓存，
+						// 否则下次冷启动会把还没同步成功的本地意图当成服务端状态。
+						// 未变化的条目本来就在缓存里，原样保留即可。
+						const touchedIds = new Set([...diff.changedIds, ...diff.addedIds]);
+						const snapshotData = diff.data.data.filter(
+							(item) =>
+								!touchedIds.has(item.subject_id) ||
+								isSameJsonPayload(serverById.get(item.subject_id), item),
+						);
+						await writeCachedValue(collectionsCacheKey, {
+							...diff.data,
+							data: snapshotData,
+							total: snapshotData.length,
+						});
+						void queryClient.invalidateQueries({
+							queryKey: ["collection-status-map", uname],
+						});
+					}
+				} catch (error) {
+					console.warn("[manual-sync] collections failed", error);
+					failed.push("收藏");
+				}
+			})();
+
+			// 3. 日历：只回写新增/变化的条目预览。
+			const calendarTask = (async () => {
+				if (!isWatching) return;
+				try {
+					const incoming = await getCalendar();
+					const current = queryClient.getQueryData<CalendarItem[]>(
+						CALENDAR_QUERY_KEY,
+					);
+					const diff = diffCalendar(current, incoming);
+					if (!diff.changed) return;
+					queryClient.setQueryData(CALENDAR_QUERY_KEY, diff.calendar);
+					calendarChanged = true;
+					if (diff.changedSubjects.length > 0) {
+						await writeCachedSubjectPreviews(diff.changedSubjects);
+					}
+					await writeCachedValue("calendar", diff.calendar);
+				} catch (error) {
+					console.warn("[manual-sync] calendar failed", error);
+					failed.push("日历");
+				}
+			})();
+
+			// 4. 播出时间与剧集表：只跳过限流窗口，不先清空缓存，界面始终保留旧值。
+			// refetchQueries 自身就会强制发起请求，因此不再先 invalidate（否则同一轮会取两次）。
+			const scheduleTask = Promise.all([
+				queryClient.refetchQueries({
+					queryKey: ["anilist-airing-times-v2"],
+				}),
+				queryClient.refetchQueries({
+					queryKey: ["episodes-schedule-v2"],
+				}),
+			]);
+
+			await Promise.all([collectionsTask, calendarTask, scheduleTask]);
+			const airingAfter = mergeAiringRecordMaps(
+				airingBefore,
+				readCachedQueryMap<AiringCacheRecord>(
+					queryClient,
+					[["anilist-airing-times-v2"]],
+					airingIds,
+					(record) => record.fetchedAt,
+				),
+			);
+			let airingChanges = 0;
+			for (const [subjectId, record] of airingAfter) {
+				if (isSameAiringSchedule(airingBefore?.get(subjectId), record)) continue;
+				airingChanges += 1;
+			}
+
+			const total =
+				changedCollections + addedCollections + removedCollections;
+			const summary = [
+				addedCollections > 0 ? `新增 ${addedCollections}` : null,
+				changedCollections > 0 ? `更新 ${changedCollections}` : null,
+				removedCollections > 0 ? `移出 ${removedCollections}` : null,
+			]
+				.filter(Boolean)
+				.join("、");
+			if (failed.length > 0) {
+				showToast(
+					`${failed.join("、")}同步失败${total > 0 ? `，已更新 ${total} 项收藏` : ""}`,
+					"error",
+				);
+			} else if (total > 0) {
+				showToast(`已同步 ${summary} 项收藏`);
+			} else if (calendarChanged) {
+				showToast("日历已更新");
+			} else if (airingChanges > 0) {
+				showToast(`播出时间已更新 ${airingChanges} 项`);
+			} else {
+				showToast("已是最新");
+			}
+		} finally {
+			endRefresh();
+			endRefreshCalendar.current?.();
+			endRefreshCalendar.current = null;
+			manualSyncInFlight.current = false;
+			if (isMounted.current) setIsManualSyncing(false);
+		}
+	}, [
+		airingSelection,
+		collectionType,
+		collectionsCacheKey,
+		collectionsQueryKey,
+		isWatching,
+		queryClient,
+		uname,
+	]);
 
 	// Keyboard navigation
 	useKeyboardShortcuts(
@@ -2027,7 +2215,7 @@ export default function CollectionsPage() {
 				mod: true,
 				when: () => isWatching,
 				handler: () => {
-					clearAiringCache();
+					void runManualSync();
 				},
 			},
 			{
@@ -2108,6 +2296,9 @@ export default function CollectionsPage() {
 						? `搜索 · 共 ${filtered.length} 条`
 						: `第 ${page} / ${totalPages} 页 · 共 ${visibleSorted.length} 条`},{}
 				</span>
+				{isManualSyncing && (
+					<span className="text-accent animate-pulse">同步中…</span>
+				)}
 			</div>
 
 			{/* Scrollable list */}

@@ -574,7 +574,7 @@ export default function Layout() {
 					<KeyHint k={`${MOD}+←→`} label="翻页" />
 					<KeyHint k={`${MOD}+↑↓`} label="切标签" />
 					<KeyHint k="Tab" label="侧边栏" />
-					{isCollections && <KeyHint k={`${MOD}+R`} label="刷新缓存" />}
+					{isCollections && <KeyHint k={`${MOD}+R`} label="同步刷新" />}
 					{isCollections && <KeyHint k={`${MOD}+O`} label="浏览器打开" />}
 					{isCalendar && <KeyHint k={`${MOD}+O`} label="浏览器打开" />}
 					{isNextSeason && <KeyHint k={`${MOD}+O`} label="浏览器打开" />}

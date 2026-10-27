@@ -2,9 +2,12 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 const refreshInFlight = new WeakMap<QueryClient, Map<string, Promise<boolean>>>();
 const refreshListeners = new WeakMap<QueryClient, Set<() => void>>();
+/** 页面自己发起的整批刷新（如 Ctrl+R）：与 SWR 任务共用完成屏障，但不参与去重。 */
+const externalRefresh = new WeakMap<QueryClient, Map<string, number>>();
 
 export function hasCacheRefreshInFlight(client: QueryClient, keys: readonly string[]) {
-  return keys.some(key => refreshInFlight.get(client)?.has(key));
+  return keys.some(key => refreshInFlight.get(client)?.has(key)
+    || (externalRefresh.get(client)?.get(key) ?? 0) > 0);
 }
 
 export function subscribeCacheRefresh(client: QueryClient, listener: () => void) {
@@ -16,6 +19,27 @@ export function subscribeCacheRefresh(client: QueryClient, listener: () => void)
 
 function notifyRefresh(client: QueryClient) {
   for (const listener of refreshListeners.get(client) ?? []) listener();
+}
+
+/**
+ * 登记一段由调用方自行执行的刷新，返回结束回调。
+ * 期间 isBackgroundRefreshing 为 true，页面的整批提交屏障会推迟到刷新结束，
+ * 避免收藏与日历各自触发一次中间帧。
+ */
+export function beginCacheRefresh(client: QueryClient, key: string) {
+  let pending = externalRefresh.get(client);
+  if (!pending) { pending = new Map(); externalRefresh.set(client, pending); }
+  pending.set(key, (pending.get(key) ?? 0) + 1);
+  notifyRefresh(client);
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    const current = pending.get(key) ?? 0;
+    if (current <= 1) pending.delete(key);
+    else pending.set(key, current - 1);
+    notifyRefresh(client);
+  };
 }
 
 export function isCacheStale(updatedAt: number, maxAgeMs: number, now = Date.now()) {

@@ -2,8 +2,9 @@ import type {
 	CollectionType,
 	PagedResponse,
 	UserCollection,
-} from "./api/types";
-import type { SortedCollection } from "./sort-collections";
+} from "./api/types.ts";
+import { isSameJsonPayload } from "./payload-equality.ts";
+import type { SortedCollection } from "./sort-collections.ts";
 
 export type CollectionPatch = Partial<
 	Pick<UserCollection, "ep_status" | "type">
@@ -112,6 +113,116 @@ export function mergeConcurrentCollectionChanges({
 			patch: { type: live.type, ep_status: live.ep_status }, collectionType, fallbackCollection: live });
 	}
 	return next;
+}
+
+function isSamePayload(left: unknown, right: unknown) {
+	return isSameJsonPayload(left, right);
+}
+
+/**
+ * 本地（乐观任务、worker 确认）与刷新起点不一致的条目：
+ * 这些条目不能用本次网络响应覆盖，也不能按响应结果持久化。
+ */
+export function getLocalCollectionChangeIds(
+	originalData: PagedResponse<UserCollection>,
+	liveData: PagedResponse<UserCollection>,
+) {
+	const changed = new Set<number>();
+	const liveById = new Map(liveData.data.map((item) => [item.subject_id, item]));
+	for (const original of originalData.data) {
+		const live = liveById.get(original.subject_id);
+		if (!live || live.type !== original.type || live.ep_status !== original.ep_status) {
+			changed.add(original.subject_id);
+		}
+	}
+	const originalIds = new Set(originalData.data.map((item) => item.subject_id));
+	for (const live of liveData.data) {
+		if (!originalIds.has(live.subject_id)) changed.add(live.subject_id);
+	}
+	return changed;
+}
+
+export type CollectionListDiff = {
+	data: PagedResponse<UserCollection>;
+	changed: boolean;
+	addedIds: number[];
+	changedIds: number[];
+	removedIds: number[];
+	/** 新增或有字段变化的条目，用于只写回受影响的行与预览。 */
+	changedItems: UserCollection[];
+};
+
+/**
+ * 服务端列表与当前快照的逐条对比：
+ * 未变化的条目复用原对象，调用方只持久化 changedItems/removedIds。
+ * complete=false（服务端只返回了首页）时不能推断删除，也不能丢掉本地多出的条目。
+ */
+export function diffCollectionList(
+	current: PagedResponse<UserCollection> | undefined,
+	incoming: PagedResponse<UserCollection>,
+	{ complete = true }: { complete?: boolean } = {},
+): CollectionListDiff {
+	if (!current) {
+		return {
+			data: incoming,
+			changed: incoming.data.length > 0 || incoming.total !== 0,
+			addedIds: incoming.data.map((item) => item.subject_id),
+			changedIds: [],
+			removedIds: [],
+			changedItems: [...incoming.data],
+		};
+	}
+
+	const currentById = new Map(
+		current.data.map((item) => [item.subject_id, item]),
+	);
+	const seen = new Set<number>();
+	const addedIds: number[] = [];
+	const changedIds: number[] = [];
+	const changedItems: UserCollection[] = [];
+	const data = incoming.data.map((item) => {
+		seen.add(item.subject_id);
+		const previous = currentById.get(item.subject_id);
+		if (!previous) {
+			addedIds.push(item.subject_id);
+			changedItems.push(item);
+			return item;
+		}
+		if (isSamePayload(previous, item)) return previous;
+		changedIds.push(item.subject_id);
+		changedItems.push(item);
+		return item;
+	});
+	const removedIds = complete
+		? current.data
+				.filter((item) => !seen.has(item.subject_id))
+				.map((item) => item.subject_id)
+		: [];
+	const mergedData = complete
+		? data
+		: [...data, ...current.data.filter((item) => !seen.has(item.subject_id))];
+	// 只刷新首页时服务端仍可能调整顺序，成员相同也要让列表重排。
+	const orderChanged =
+		!complete &&
+		(mergedData.length !== current.data.length ||
+			mergedData.some(
+				(item, index) => item.subject_id !== current.data[index]?.subject_id,
+			));
+	const changed =
+		addedIds.length > 0 ||
+		changedIds.length > 0 ||
+		removedIds.length > 0 ||
+		orderChanged ||
+		current.total !== incoming.total;
+
+	return {
+		data: changed ? { ...incoming, data: mergedData } : current,
+		changed,
+		addedIds,
+		changedIds,
+		removedIds,
+		changedItems,
+	};
 }
 
 export function hasCollectionStateChanged(
