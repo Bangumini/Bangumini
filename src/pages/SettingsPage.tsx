@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -37,6 +37,13 @@ interface ProxyConfig {
 }
 
 const PROXY_STORAGE_KEY = "bangumini_proxy_config";
+
+const INPUT_CLASS =
+	"w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none";
+const PRIMARY_BUTTON_CLASS =
+	"px-4 py-1.5 text-[13px] font-medium bg-accent text-accent-fg rounded-md hover:opacity-90 disabled:opacity-40 transition-opacity";
+const SECONDARY_BUTTON_CLASS =
+	"px-4 py-1.5 text-[13px] font-medium bg-elevated text-fg-secondary rounded-md border border-line hover:bg-hover transition-colors";
 
 function loadProxyConfig(): ProxyConfig {
 	try {
@@ -85,6 +92,85 @@ const getPortableDownloadUrl = (version: string) => {
 // 上次检查时间格式化：本地时间，24 小时制
 function formatCheckTime(t: number): string {
 	return new Date(t).toLocaleString("zh-CN", { hour12: false });
+}
+
+// 设置分组：圆角矩形背景 + 细边框，在视觉上把不同类型的配置分隔开
+function SettingsSection({
+	title,
+	children,
+}: {
+	title?: string;
+	children: ReactNode;
+}) {
+	return (
+		<section className="rounded-card border border-line bg-elevated/50 p-4">
+			{title && (
+				<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-3">
+					{title}
+				</h3>
+			)}
+			{children}
+		</section>
+	);
+}
+
+// 卡片内部的设置行列表：行之间用极淡的分隔线，避免堆叠感
+function SettingsList({ children }: { children: ReactNode }) {
+	return <div className="divide-y divide-line/60">{children}</div>;
+}
+
+function SettingsRow({
+	label,
+	description,
+	children,
+}: {
+	label: string;
+	description?: string;
+	children: ReactNode;
+}) {
+	return (
+		<div className="flex items-center justify-between gap-4 py-2.5 first:pt-0 last:pb-0">
+			<div className="min-w-0">
+				<div className="text-[13px] text-fg-secondary">{label}</div>
+				{description && (
+					<p className="text-[11px] text-fg-tertiary mt-0.5">{description}</p>
+				)}
+			</div>
+			{children}
+		</div>
+	);
+}
+
+function Toggle({
+	checked,
+	onChange,
+	disabled = false,
+	label,
+}: {
+	checked: boolean;
+	onChange: () => void;
+	disabled?: boolean;
+	label: string;
+}) {
+	return (
+		<button
+			type="button"
+			role="switch"
+			aria-label={label}
+			aria-checked={checked}
+			disabled={disabled}
+			onClick={onChange}
+			className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+				checked ? "bg-accent" : "bg-line"
+			}`}
+		>
+			<span
+				className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
+					checked ? "translate-x-4" : "translate-x-0"
+				}`}
+			/>
+		</button>
+	);
 }
 
 export default function SettingsPage() {
@@ -264,7 +350,7 @@ export default function SettingsPage() {
 	};
 
 	return (
-		<div className="p-5 max-w-lg space-y-6">
+		<div className="p-5 max-w-lg space-y-3">
 			{!authenticated && (
 				<button
 					onClick={() => navigate("/login")}
@@ -273,10 +359,8 @@ export default function SettingsPage() {
 					← 返回登录
 				</button>
 			)}
-			<section>
-				<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">
-					账户
-				</h3>
+
+			<SettingsSection title="账户">
 				<label className="block text-[13px] text-fg-secondary mb-1.5">
 					Access Token
 				</label>
@@ -294,12 +378,12 @@ export default function SettingsPage() {
 							setTokenText("");
 						}}
 						disabled={!tokenText.trim()}
-						className="px-4 py-2 text-[13px] font-medium bg-accent text-accent-fg rounded-md hover:opacity-90 disabled:opacity-40 transition-opacity"
+						className={PRIMARY_BUTTON_CLASS}
 					>
 						更新
 					</button>
 				</div>
-				<p className="text-[12px] text-fg-tertiary mt-1.5">
+				<p className="text-[12px] text-fg-tertiary mt-2">
 					前往{" "}
 					<a
 						href="https://next.bgm.tv/demo/access-token"
@@ -311,47 +395,35 @@ export default function SettingsPage() {
 					</a>{" "}
 					生成
 				</p>
-			</section>
+			</SettingsSection>
 
-			<AiringOffsetSyncSettings />
+			{/* 同步配置自带分组标题（开关行）与表单，直接作为一张卡片展示 */}
+			<SettingsSection>
+				<AiringOffsetSyncSettings />
+			</SettingsSection>
 
-			<section>
-				<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">
-					全局快捷键
-				</h3>
+			<SettingsSection title="全局快捷键">
 				<ShortcutRecorder />
-			</section>
+			</SettingsSection>
 
-			<section>
-				<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">
-					代理
-				</h3>
-				<div className="flex items-center justify-between mb-3">
-					<span className="text-[13px] text-fg-secondary">启用代理</span>
-					<button
-						type="button"
-						role="switch"
-						aria-checked={proxy.enabled}
-						onClick={handleToggleProxy}
-						className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-							proxy.enabled ? "bg-accent" : "bg-line"
-						}`}
-					>
-						<span
-							className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-								proxy.enabled ? "translate-x-4" : "translate-x-0"
-							}`}
+			<SettingsSection title="代理">
+				<SettingsList>
+					<SettingsRow label="启用代理">
+						<Toggle
+							label="启用代理"
+							checked={proxy.enabled}
+							onChange={handleToggleProxy}
 						/>
-					</button>
-				</div>
+					</SettingsRow>
+				</SettingsList>
 				{proxy.enabled && (
-					<div className="space-y-3">
+					<div className="space-y-3 pt-3 mt-3 border-t border-line/60">
 						<div>
 							<label className="block text-[12px] text-fg-tertiary mb-1">协议</label>
 							<select
 								value={proxy.protocol}
 								onChange={(e) => setProxy((p) => ({ ...p, protocol: e.target.value }))}
-								className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg focus:border-accent focus:outline-none"
+								className={INPUT_CLASS}
 							>
 								<option value="http">HTTP</option>
 								<option value="https">HTTPS</option>
@@ -366,7 +438,7 @@ export default function SettingsPage() {
 									value={proxy.host}
 									onChange={(e) => setProxy((p) => ({ ...p, host: e.target.value }))}
 									placeholder="127.0.0.1"
-									className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
+									className={INPUT_CLASS}
 								/>
 							</div>
 							<div className="w-24">
@@ -376,7 +448,7 @@ export default function SettingsPage() {
 									value={proxy.port}
 									onChange={(e) => setProxy((p) => ({ ...p, port: e.target.value }))}
 									placeholder="8080"
-									className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
+									className={INPUT_CLASS}
 								/>
 							</div>
 						</div>
@@ -389,7 +461,7 @@ export default function SettingsPage() {
 									type="text"
 									value={proxy.username}
 									onChange={(e) => setProxy((p) => ({ ...p, username: e.target.value }))}
-									className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
+									className={INPUT_CLASS}
 								/>
 							</div>
 							<div className="flex-1">
@@ -400,210 +472,138 @@ export default function SettingsPage() {
 									type="password"
 									value={proxy.password}
 									onChange={(e) => setProxy((p) => ({ ...p, password: e.target.value }))}
-									className="w-full px-3 py-1.5 text-[13px] bg-elevated rounded-md border border-line text-fg placeholder-fg-tertiary focus:border-accent focus:outline-none"
+									className={INPUT_CLASS}
 								/>
 							</div>
 						</div>
-						<button
-							onClick={handleSaveProxy}
-							className="px-4 py-1.5 text-[13px] font-medium bg-accent text-accent-fg rounded-md hover:opacity-90 transition-opacity"
-						>
+						<button onClick={handleSaveProxy} className={PRIMARY_BUTTON_CLASS}>
 							{proxySaved ? "已保存" : "保存"}
 						</button>
 					</div>
 				)}
-			</section>
+			</SettingsSection>
 
-			<section>
-				<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">
-					通用
-				</h3>
-				<div className="space-y-3">
-					<div className="flex items-center justify-between gap-4">
-						<span className="text-[13px] text-fg-secondary">
-							复制条目名时带上季度
-						</span>
-						<button
-							type="button"
-							role="switch"
-							aria-checked={copyTitleWithSeason}
-							onClick={handleToggleCopyTitleWithSeason}
-							className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-								copyTitleWithSeason ? "bg-accent" : "bg-line"
-							}`}
-						>
-							<span
-								className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-									copyTitleWithSeason ? "translate-x-4" : "translate-x-0"
-								}`}
-							/>
-						</button>
-					</div>
-					<div className="flex items-center justify-between gap-4">
-						<div>
-							<div className="text-[13px] text-fg-secondary">跨季连续计数</div>
-							<p className="text-[11px] text-fg-tertiary mt-0.5">
-								例如第二季第 1 集显示为第 13 集
-							</p>
-						</div>
-						<button
-							type="button"
-							role="switch"
-							aria-label="跨季连续计数"
-							aria-checked={crossSeasonCount}
-							onClick={handleToggleCrossSeasonCount}
-							className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-								crossSeasonCount ? "bg-accent" : "bg-line"
-							}`}
-						>
-							<span
-								className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-									crossSeasonCount ? "translate-x-4" : "translate-x-0"
-								}`}
-							/>
-						</button>
-					</div>
-					<div className="flex items-center justify-between gap-4">
-						<span className="text-[13px] text-fg-secondary">开机自启动</span>
-						<button
-							type="button"
-							role="switch"
-							aria-checked={autostart}
-							disabled={autostartLoading}
-							onClick={toggleAutostart}
-							className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-								autostartLoading ? "opacity-40" : ""
-							} ${autostart ? "bg-accent" : "bg-line"}`}
-						>
-							<span
-								className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-									autostart ? "translate-x-4" : "translate-x-0"
-								}`}
-							/>
-						</button>
-					</div>
-				</div>
-			</section>
-
-			<section>
-				<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">
-					版本更新
-				</h3>
-				<div className="flex items-center justify-between mb-3">
-					<span className="text-[13px] text-fg-secondary">自动检查更新</span>
-					<button
-						type="button"
-						role="switch"
-						aria-checked={autoCheckUpdate}
-						onClick={toggleAutoCheckUpdate}
-						className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-							autoCheckUpdate ? "bg-accent" : "bg-line"
-						}`}
-					>
-						<span
-							className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-								autoCheckUpdate ? "translate-x-4" : "translate-x-0"
-							}`}
+			<SettingsSection title="通用">
+				<SettingsList>
+					<SettingsRow label="复制条目名时带上季度">
+						<Toggle
+							label="复制条目名时带上季度"
+							checked={copyTitleWithSeason}
+							onChange={handleToggleCopyTitleWithSeason}
 						/>
-					</button>
-				</div>
-				<p className="text-[13px] text-fg-secondary mb-1.5">
-					当前版本 {currentVersion || "—"}
-					{updateStatus === "up-to-date" && (
-						<span className="text-success ml-2">已是最新</span>
-					)}
-					{updateStatus === "available" && (
-						<span className="text-accent ml-2">发现新版本 {latestVersion}</span>
-					)}
-				</p>
-				{lastCheckTime && (
-					<p className="text-[12px] text-fg-tertiary mb-1.5">
-						上次检查：{formatCheckTime(lastCheckTime)}
+					</SettingsRow>
+					<SettingsRow
+						label="跨季连续计数"
+						description="例如第二季第 1 集显示为第 13 集"
+					>
+						<Toggle
+							label="跨季连续计数"
+							checked={crossSeasonCount}
+							onChange={handleToggleCrossSeasonCount}
+						/>
+					</SettingsRow>
+					<SettingsRow label="开机自启动">
+						<Toggle
+							label="开机自启动"
+							checked={autostart}
+							disabled={autostartLoading}
+							onChange={toggleAutostart}
+						/>
+					</SettingsRow>
+				</SettingsList>
+			</SettingsSection>
+
+			<SettingsSection title="版本更新">
+				<SettingsList>
+					<SettingsRow label="自动检查更新">
+						<Toggle
+							label="自动检查更新"
+							checked={autoCheckUpdate}
+							onChange={toggleAutoCheckUpdate}
+						/>
+					</SettingsRow>
+				</SettingsList>
+				<div className="mt-3 space-y-2">
+					<p className="text-[13px] text-fg-secondary">
+						当前版本 {currentVersion || "—"}
+						{updateStatus === "up-to-date" && (
+							<span className="text-success ml-2">已是最新</span>
+						)}
+						{updateStatus === "available" && (
+							<span className="text-accent ml-2">发现新版本 {latestVersion}</span>
+						)}
 					</p>
-				)}
-				{skippedVersion && (
-					<button
-						onClick={handleClearSkipped}
-						className="block text-[12px] text-fg-tertiary hover:text-accent transition-colors mb-3"
-					>
-						已跳过 v{skippedVersion} 的自动提醒，点击恢复
-					</button>
-				)}
-				{updateStatus === "idle" && (
-					<button
-						onClick={handleCheckUpdate}
-						className="px-4 py-1.5 text-[13px] font-medium bg-accent text-accent-fg rounded-md hover:opacity-90 transition-opacity"
-					>
-						检查更新
-					</button>
-				)}
-				{updateStatus === "checking" && (
-					<span className="text-[13px] text-fg-tertiary animate-pulse">
-						正在检查…
-					</span>
-				)}
-				{updateStatus === "up-to-date" && (
-					<button
-						onClick={handleCheckUpdate}
-						className="px-4 py-1.5 text-[13px] font-medium bg-elevated text-fg-secondary rounded-md border border-line hover:bg-hover transition-colors"
-					>
-						重新检查
-					</button>
-				)}
-				{updateStatus === "available" && (
-					<div className="flex gap-2">
+					{lastCheckTime && (
+						<p className="text-[12px] text-fg-tertiary">
+							上次检查：{formatCheckTime(lastCheckTime)}
+						</p>
+					)}
+					{skippedVersion && (
 						<button
-							onClick={handleDownloadUpdate}
-							className="px-4 py-1.5 text-[13px] font-medium bg-accent text-accent-fg rounded-md hover:opacity-90 transition-opacity"
+							onClick={handleClearSkipped}
+							className="block text-left text-[12px] text-fg-tertiary hover:text-accent transition-colors"
 						>
-							{distributionKind === "portable" ? "下载便携版" : "下载更新"}
+							已跳过 v{skippedVersion} 的自动提醒，点击恢复
 						</button>
-						<button
-							onClick={handleCheckUpdate}
-							className="px-4 py-1.5 text-[13px] font-medium bg-elevated text-fg-secondary rounded-md border border-line hover:bg-hover transition-colors"
-						>
+					)}
+					{updateStatus === "idle" && (
+						<button onClick={handleCheckUpdate} className={PRIMARY_BUTTON_CLASS}>
+							检查更新
+						</button>
+					)}
+					{updateStatus === "checking" && (
+						<span className="text-[13px] text-fg-tertiary animate-pulse">
+							正在检查…
+						</span>
+					)}
+					{updateStatus === "up-to-date" && (
+						<button onClick={handleCheckUpdate} className={SECONDARY_BUTTON_CLASS}>
 							重新检查
 						</button>
-					</div>
-				)}
-				{updateStatus === "downloading" && (
-					<div className="space-y-2">
-						<span className="text-[13px] text-fg-secondary">
-							下载中 {downloadProgress}%
-						</span>
-						<div className="h-1.5 w-48 rounded-full bg-elevated overflow-hidden">
-							<div
-								className="h-full rounded-full bg-accent transition-all"
-								style={{ width: `${downloadProgress}%` }}
-							/>
+					)}
+					{updateStatus === "available" && (
+						<div className="flex gap-2">
+							<button onClick={handleDownloadUpdate} className={PRIMARY_BUTTON_CLASS}>
+								{distributionKind === "portable" ? "下载便携版" : "下载更新"}
+							</button>
+							<button onClick={handleCheckUpdate} className={SECONDARY_BUTTON_CLASS}>
+								重新检查
+							</button>
 						</div>
-					</div>
-				)}
-				{updateStatus === "ready" && (
-					<button
-						onClick={handleRestart}
-						className="px-4 py-1.5 text-[13px] font-medium bg-success text-success-fg rounded-md hover:opacity-90 transition-opacity"
-					>
-						安装并重启
-					</button>
-				)}
-				{updateStatus === "error" && (
-					<div className="space-y-2">
-						<span className="text-[13px] text-danger">检查更新失败</span>
+					)}
+					{updateStatus === "downloading" && (
+						<div className="space-y-2">
+							<span className="text-[13px] text-fg-secondary">
+								下载中 {downloadProgress}%
+							</span>
+							<div className="h-1.5 w-48 rounded-full bg-elevated overflow-hidden">
+								<div
+									className="h-full rounded-full bg-accent transition-all"
+									style={{ width: `${downloadProgress}%` }}
+								/>
+							</div>
+						</div>
+					)}
+					{updateStatus === "ready" && (
 						<button
-							onClick={handleCheckUpdate}
-							className="block px-4 py-1.5 text-[13px] font-medium bg-elevated text-fg-secondary rounded-md border border-line hover:bg-hover transition-colors"
+							onClick={handleRestart}
+							className="px-4 py-1.5 text-[13px] font-medium bg-success text-success-fg rounded-md hover:opacity-90 transition-opacity"
 						>
-							重试
+							安装并重启
 						</button>
-					</div>
-				)}
-			</section>
+					)}
+					{updateStatus === "error" && (
+						<div className="space-y-2">
+							<span className="text-[13px] text-danger">检查更新失败</span>
+							<button onClick={handleCheckUpdate} className={SECONDARY_BUTTON_CLASS}>
+								重试
+							</button>
+						</div>
+					)}
+				</div>
+			</SettingsSection>
 
-			<section>
-				<h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">
-					关于
-				</h3>
+			<SettingsSection title="关于">
 				<button
 					onClick={() => openUrl("https://github.com/Bangumini/Bangumini")}
 					className="flex items-center gap-2 text-[13px] text-fg-secondary hover:text-accent transition-colors"
@@ -612,9 +612,9 @@ export default function SettingsPage() {
 					<span>Bangumini</span>
 					<ExternalIcon size={14} />
 				</button>
-			</section>
+			</SettingsSection>
 
-			<div className="pt-2 border-t border-line">
+			<div className="pt-1">
 				<button
 					onClick={() => {
 						clearToken();

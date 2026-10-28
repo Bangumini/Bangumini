@@ -9,6 +9,18 @@ import useAiringOffsetSync from "../hooks/useAiringOffsetSync";
 const buttonClass = "rounded-md border border-line bg-elevated px-3 py-1.5 text-[12px] text-fg-secondary hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-accent";
 const detailClass = "text-[12px] text-fg-tertiary";
 
+// 协议切换按钮：选中态用强调色边框 + 底色 + 文字；与非选中态完全分开书写，
+// 避免 border/text 工具类互相覆盖导致高亮不生效。
+function providerButtonClass(selected: boolean) {
+	return [
+		"inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] transition-colors",
+		"disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-accent",
+		selected
+			? "border-accent bg-accent-soft text-accent font-medium"
+			: "border-line bg-elevated text-fg-secondary hover:bg-hover",
+	].join(" ");
+}
+
 function emptyConfig(): OffsetSyncConfig {
 	return { provider: "webdav", prefix: DEFAULT_OFFSET_SYNC_PREFIX, autoSync: true, url: "", username: "", password: "" };
 }
@@ -138,7 +150,7 @@ function AccountSettings({ manager, account }: { manager: AiringOffsetSyncManage
 			<div className="flex flex-wrap gap-2" role="group" aria-label="存储协议">
 				{(["webdav", "s3"] as const).map(provider => <button key={provider} type="button"
 					aria-pressed={draft.provider === provider} onClick={() => selectProvider(provider)}
-					className={`${buttonClass} ${draft.provider === provider ? "border-accent text-accent" : ""}`}>
+					className={providerButtonClass(draft.provider === provider)}>
 					{provider === "webdav" ? "WebDAV" : "S3 / R2"}
 				</button>)}
 			</div>
