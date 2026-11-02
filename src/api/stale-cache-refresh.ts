@@ -4,10 +4,46 @@ const refreshInFlight = new WeakMap<QueryClient, Map<string, Promise<boolean>>>(
 const refreshListeners = new WeakMap<QueryClient, Set<() => void>>();
 /** 页面自己发起的整批刷新（如 Ctrl+R）：与 SWR 任务共用完成屏障，但不参与去重。 */
 const externalRefresh = new WeakMap<QueryClient, Map<string, number>>();
+/** 最近一次后台刷新完成时刻：自动刷新用它判断“这一轮是否已经被别人做过”。 */
+const lastRefreshAt = new WeakMap<QueryClient, Map<string, number>>();
+
+function recordRefreshDone(client: QueryClient, key: string) {
+  let recorded = lastRefreshAt.get(client);
+  if (!recorded) { recorded = new Map(); lastRefreshAt.set(client, recorded); }
+  recorded.set(key, Date.now());
+}
+
+/**
+ * 这些缓存键最近一次刷新完成的时间戳；0 表示本次会话还没完成过。
+ * 按 key 区分：在日历页完成的刷新不能让收藏页误判“已经刷过”。
+ */
+export function getLastCacheRefreshAt(client: QueryClient, keys: readonly string[]) {
+  const recorded = lastRefreshAt.get(client);
+  let latest = 0;
+  for (const key of keys) latest = Math.max(latest, recorded?.get(key) ?? 0);
+  return latest;
+}
 
 export function hasCacheRefreshInFlight(client: QueryClient, keys: readonly string[]) {
   return keys.some(key => refreshInFlight.get(client)?.has(key)
     || (externalRefresh.get(client)?.get(key) ?? 0) > 0);
+}
+
+/** 等待这些键当前的刷新结束；没有在跑时立即完成。 */
+export function waitForCacheRefresh(client: QueryClient, keys: readonly string[]): Promise<void> {
+  if (!hasCacheRefreshInFlight(client, keys)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = subscribeCacheRefresh(client, () => {
+      if (hasCacheRefreshInFlight(client, keys)) return;
+      unsubscribe();
+      resolve();
+    });
+    // 订阅前可能刚好结束，再确认一次避免永久挂起。
+    if (!hasCacheRefreshInFlight(client, keys)) {
+      unsubscribe();
+      resolve();
+    }
+  });
 }
 
 export function subscribeCacheRefresh(client: QueryClient, listener: () => void) {
@@ -38,6 +74,7 @@ export function beginCacheRefresh(client: QueryClient, key: string) {
     const current = pending.get(key) ?? 0;
     if (current <= 1) pending.delete(key);
     else pending.set(key, current - 1);
+    recordRefreshDone(client, key);
     notifyRefresh(client);
   };
 }
@@ -110,6 +147,7 @@ export function refreshQueryDataIfChanged<T>({
     })
     .finally(() => {
       pending.delete(refreshKey);
+      recordRefreshDone(queryClient, refreshKey);
       notifyRefresh(queryClient);
     });
   pending.set(refreshKey, task);

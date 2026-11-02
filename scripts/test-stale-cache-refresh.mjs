@@ -1,6 +1,9 @@
 // stale-while-revalidate 刷新保护回归测试
 import assert from "node:assert/strict";
-import { refreshQueryDataIfChanged, hasCacheRefreshInFlight, subscribeCacheRefresh } from "../src/api/stale-cache-refresh.ts";
+import {
+  refreshQueryDataIfChanged, hasCacheRefreshInFlight, subscribeCacheRefresh,
+  waitForCacheRefresh, getLastCacheRefreshAt, beginCacheRefresh,
+} from "../src/api/stale-cache-refresh.ts";
 
 function createQueryClient(initial) {
 	let data = initial;
@@ -90,3 +93,39 @@ await merging;
 assert.deepEqual(mergeClient.data, { title: "新", progress: 2 }, "合并远端元数据时必须重读并保留最新用户目标");
 
 console.log("stale cache refresh: 全部通过 ✓");
+
+// 自动刷新用它判断“这一轮是不是已经被页面自己的 SWR 完成了”：
+// 必须按 key 区分，并且能等正在跑的刷新结束。
+{
+  const waitClient = createQueryClient({ value: 1 });
+  assert.equal(getLastCacheRefreshAt(waitClient, ["collections"]), 0, "未刷新过时为 0");
+  let finish;
+  const running = refreshQueryDataIfChanged({
+    queryClient: waitClient, queryKey: ["collections"], refreshKey: "collections",
+    currentData: { value: 1 }, refresh: () => new Promise(resolve => { finish = resolve; }),
+  });
+  let waited = false;
+  const waiting = waitForCacheRefresh(waitClient, ["collections"]).then(() => { waited = true; });
+  await Promise.resolve();
+  assert.equal(waited, false, "等不到刷新结束不能提前返回");
+  const before = Date.now();
+  finish({ value: 2 });
+  await running;
+  await waiting;
+  assert.equal(waited, true);
+  const finishedAt = getLastCacheRefreshAt(waitClient, ["collections"]);
+  assert.ok(finishedAt >= before, "完成时刻必须晚于发起时刻");
+  assert.equal(getLastCacheRefreshAt(waitClient, ["calendar"]), 0, "其它 key 不能被标记为已刷新");
+  // 没有刷新在跑时立即完成。
+  await waitForCacheRefresh(waitClient, ["collections"]);
+  // 外部整批刷新（Ctrl+R / 自动刷新）也计入完成时刻。
+  const externalClient = createQueryClient({ value: 1 });
+  const end = beginCacheRefresh(externalClient, "calendar");
+  let externalDone = false;
+  const externalWait = waitForCacheRefresh(externalClient, ["calendar"]).then(() => { externalDone = true; });
+  await Promise.resolve();
+  assert.equal(externalDone, false);
+  end();
+  await externalWait;
+  assert.ok(getLastCacheRefreshAt(externalClient, ["calendar"]) > 0, "整批刷新也要记录完成时刻");
+}

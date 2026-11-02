@@ -6,7 +6,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tauri::Manager;
 mod auth_diagnostics;
@@ -74,6 +74,52 @@ struct ShortcutHolder {
 }
 
 static IS_DRAGGING: AtomicBool = AtomicBool::new(false);
+
+/// 正在显示的提示窗口数量。
+///
+/// 主窗口在失焦时自动隐藏，提示窗虽然不再抢焦点（`WS_EX_NOACTIVATE`），
+/// 但仍有边缘情况会引发失焦；提示存活期间把隐藏动作推迟到提示消失后再做，
+/// 避免“提示自己把主窗口关了”，也避免提示期间用户切走时永远不隐藏。
+static FOCUS_HOLD: AtomicUsize = AtomicUsize::new(0);
+static PENDING_HIDE: AtomicBool = AtomicBool::new(false);
+
+fn is_focus_held() -> bool {
+    FOCUS_HOLD.load(Ordering::SeqCst) > 0
+}
+
+/// 提示窗口存活期间的焦点保护，Drop 时自动释放，构建失败也不会泄漏。
+struct FocusHold {
+    app: tauri::AppHandle,
+}
+
+impl FocusHold {
+    fn acquire(app: tauri::AppHandle) -> Self {
+        FOCUS_HOLD.fetch_add(1, Ordering::SeqCst);
+        FocusHold { app }
+    }
+}
+
+impl Drop for FocusHold {
+    fn drop(&mut self) {
+        // 还有其它提示在显示时只递减计数。
+        if FOCUS_HOLD.fetch_sub(1, Ordering::SeqCst) > 1 {
+            return;
+        }
+        // 最后一个提示消失，补做一次被推迟的隐藏。
+        if !PENDING_HIDE.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        if let Some(main) = self.app.get_webview_window("main") {
+            if main.is_visible().unwrap_or(false)
+                && !main.is_focused().unwrap_or(false)
+                && !IS_DRAGGING.load(Ordering::SeqCst)
+                && !main.is_always_on_top().unwrap_or(false)
+            {
+                let _ = main.hide();
+            }
+        }
+    }
+}
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
 struct ProxyConfig {
@@ -756,7 +802,12 @@ pub fn run() {
                             && !IS_DRAGGING.load(Ordering::SeqCst)
                             && !w_events.is_always_on_top().unwrap_or(false)
                         {
-                            let _ = w_events.hide();
+                            if is_focus_held() {
+                                // 提示窗还在显示：先记下，等提示消失后再隐藏。
+                                PENDING_HIDE.store(true, Ordering::SeqCst);
+                            } else {
+                                let _ = w_events.hide();
+                            }
                         }
                     }
                     tauri::WindowEvent::CloseRequested { api, .. } => {
@@ -998,6 +1049,10 @@ async fn show_toast(
         _ => "#4ade80",
     };
 
+    // 提示窗展示期间禁止主窗口因失焦自动隐藏：
+    // 否则提示一抢焦点，主窗口就被自己的提示关掉。
+    let focus_hold = FocusHold::acquire(app.clone());
+
     let label = format!("toast-{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1061,6 +1116,10 @@ async fn show_toast(
         .transparent(true)
         .skip_taskbar(true)
         .always_on_top(true)
+        // 提示窗完全不接受焦点（Windows 下即 WS_EX_NOACTIVATE）：
+        // 既不抢主窗口的焦点、不触发主窗口自动隐藏，也不打断用户正在用的快捷键。
+        .focused(false)
+        .focusable(false)
         .shadow(false)
         .visible(false)
         .build()
@@ -1085,12 +1144,19 @@ async fn show_toast(
     }
 
     let _ = window.show();
-
     // Auto-close after the configured duration.
     let w = window.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(duration)).await;
         let _ = w.close();
+        // 先释放焦点保护（可能补做一次被推迟的隐藏），
+        // 再把焦点还给仍然可见的主窗口；隐藏了就不抢焦点。
+        drop(focus_hold);
+        if let Some(main) = w.app_handle().get_webview_window("main") {
+            if main.is_visible().unwrap_or(false) && !main.is_focused().unwrap_or(false) {
+                let _ = main.set_focus();
+            }
+        }
     });
 
     Ok(())

@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router-dom";
 import { tauriFetch, isTauri } from "./api/tauri-fetch";
 import { setFetchFunction as setBangumiFetchFunction } from "@shared/api/client";
 import { setFetchFunction as setAniListFetchFunction } from "@shared/api/anilist";
+import { notifyNativeWindowVisibility } from "./api/auto-refresh";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
@@ -39,13 +40,15 @@ if (isTauri()) {
 // Disable right-click context menu
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
-// Bridge Tauri window focus events to React Query's focusManager.
-// React Query's default focus listener relies on browser `focus`/`visibilitychange`
-// events, which Tauri doesn't fire when the window is programmatically shown/hidden
-// (e.g. via global shortcut or tray click).
+// Bridge Tauri window focus events to React Query's focusManager AND to the
+// auto-refresh trigger gate. React Query's default focus listener relies on
+// browser `focus`/`visibilitychange` events, which Tauri doesn't fire when the
+// window is programmatically shown/hidden (e.g. via global shortcut or tray).
+// 自动刷新需要知道“窗口重新显示”，因此同一个事件也通知触发闸门。
 if (isTauri()) {
   getCurrentWindow().onFocusChanged(({ payload: focused }) => {
     focusManager.setFocused(focused);
+    notifyNativeWindowVisibility(focused);
   });
 }
 

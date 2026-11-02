@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import Layout from "/src/components/Layout.tsx";
 import CollectionsPage from "/src/pages/CollectionsPage.tsx";
+import { startCollectionsAutoRefreshLifecycle } from "/src/api/auto-refresh.ts";
 import { refreshQueryDataIfChanged } from "/src/api/stale-cache-refresh.ts";
 import "/src/index.css";
 const SubjectDetailPage = React.lazy(() => import("/src/pages/SubjectDetailPage.tsx"));
@@ -88,6 +89,10 @@ const frameObserver = scenario?.startsWith("atomic-") || detail ? new MutationOb
   if (previous?.content !== content) frames.push({ content, offlineReady: offlineReady() });
 }) : null;
 frameObserver?.observe(document.body, { subtree: true, childList: true, characterData: true });
+// 与真实 App 一致：启动自动刷新的触发节点（每个进程一次）。
+// 这会让每个场景都在真实触发链上运行：如果自动刷新额外发了请求或造成中间帧，
+// 现有的帧数/请求次数断言就会失败。
+startCollectionsAutoRefreshLifecycle();
 if (scenario === "atomic-shared") {
   client.setQueryData(["calendar"], calendar);
   void refreshQueryDataIfChanged({ queryClient: client, queryKey: ["calendar"], refreshKey: "calendar", currentData: calendar,

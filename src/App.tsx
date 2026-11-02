@@ -16,6 +16,9 @@ import { useAuth } from "./hooks/useAuth";
 import { isTauri } from "./api/tauri-fetch";
 import { DEFAULT_SHORTCUT, loadStoredShortcut } from "./api/shortcut";
 import { startCollectionTaskWorker } from "./api/collection-tasks";
+import {
+  startCollectionsAutoRefreshLifecycle,
+} from "./api/auto-refresh";
 import { cleanupExpiredCache } from "@shared/storage/sqlite-cache";
 import Layout from "./components/Layout";
 import SearchPage from "./pages/SearchPage";
@@ -71,6 +74,13 @@ export default function App() {
       startCollectionTaskWorker(queryClient);
     }
   }, [authenticated, queryClient]);
+
+  // 自动刷新的触发节点：应用启动排队一次，并在窗口重新显示/聚焦时再排队。
+  // 具体刷新流程与 Ctrl+R 共用 ../api/collections-refresh。
+  useEffect(() => {
+    const stop = startCollectionsAutoRefreshLifecycle();
+    return stop;
+  }, []);
 
   useEffect(() => {
     if (!isTauri()) return;

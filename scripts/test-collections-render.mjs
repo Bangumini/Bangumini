@@ -67,6 +67,12 @@ export const getQueryOptions = (key) => queries.get(JSON.stringify(key));
 function callIO(name, args) {
   if (name === "useKeyboardShortcuts") return;
   if (name === "useCacheRefreshPending") return false;
+  if (name === "subscribeCollectionsAutoRefresh") return () => {};
+  if (name === "consumeCollectionsAutoRefreshRequest") return false;
+  if (name === "backfillTotalEpisodesFromCache") return Promise.resolve();
+  if (name === "getCollectionsRefreshToast") return null;
+  if (name === "refreshCollectionsData") return Promise.resolve({});
+  if (name === "getCollectionsCacheKey") return "collections-3-fixture-user";
   if (Object.hasOwn(io, name)) return io[name](...args);
   throw new Error("不应调用 IO: " + name);
 }

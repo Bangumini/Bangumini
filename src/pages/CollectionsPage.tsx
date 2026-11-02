@@ -5,7 +5,6 @@ import { invoke } from "@tauri-apps/api/core";
 import {
 	getAllUserCollections,
 	getCalendar,
-	getEpisodes,
 	getSubject,
 	getUserCollections,
 } from "@shared/api/client";
@@ -40,8 +39,6 @@ import {
 	AIRING_REFRESH_MIN_INTERVAL,
 	airingForceWindow,
 	isAiringCacheRecord,
-	isSameAiringSchedule,
-	mergeAiringRecordMaps,
 	removeLegacyAiringRecord,
 	shouldRefreshAiringRecord,
 	type AiringCacheRecord,
@@ -51,12 +48,8 @@ import {
 	buildAiringWeekdayMap,
 	type AiringTimeTarget,
 } from "@shared/airing-targets";
-import { diffCalendar } from "@shared/calendar-cache";
 import { getForcedRoundStart } from "@shared/cache-force";
-import {
-	diffCollectionList,
-	mergeConcurrentCollectionChanges,
-} from "@shared/collection-cache";
+import { mergeConcurrentCollectionChanges } from "@shared/collection-cache";
 import {
 	EPISODES_CACHE_MAX_AGE,
 	episodesForceWindow,
@@ -65,7 +58,6 @@ import {
 	shouldRefreshEpisodeRecord,
 	type EpisodeScheduleCache,
 } from "@shared/episodes-cache";
-import { isSameJsonPayload } from "@shared/payload-equality";
 import { useAiringOffsets } from "../hooks/useAiringOffsets";
 import { useCacheRefreshPending } from "../hooks/useCacheRefreshPending";
 import {
@@ -81,20 +73,32 @@ import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
 	readAllCachedCollections,
 	readCachedCollection,
-	readCachedSubjectDeep,
 	readCachedValueEntryAllowStale,
 	readCachedValuesAllowStale,
 	readCachedValueWithLegacy,
 	readLegacyHttpCache,
-	deleteCachedCollection,
 	deleteCachedValue,
 	writeCachedCollection,
 	writeCachedSubjectPreviews,
 	writeCachedValue,
 } from "@shared/storage/sqlite-cache";
 import { getUsername } from "../api/oauth";
-import { beginCacheRefresh, refreshQueryDataIfChanged } from "../api/stale-cache-refresh";
+import { CALENDAR_CACHE_KEY } from "@shared/cache-keys";
+import {
+	backfillTotalEpisodesFromCache,
+	fetchEpisodeSchedule,
+	getCollectionsRefreshToast,
+	refreshCollectionsData,
+	type CollectionsRefreshTrigger,
+} from "../api/collections-refresh";
+import { refreshQueryDataIfChanged, waitForCacheRefresh, getLastCacheRefreshAt } from "../api/stale-cache-refresh";
+import { collectionsAutoRefreshGate } from "../api/auto-refresh";
+import {
+	consumeCollectionsAutoRefreshRequest,
+	subscribeCollectionsAutoRefresh,
+} from "../api/auto-refresh";
 import { readCachedQueryMap } from "../api/query-map-cache";
+import { getCollectionsCacheKey } from "@shared/cache-keys";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import {
 	COLLECTION_TASK_EVENT,
@@ -107,7 +111,6 @@ import { SubjectRow, Rating, Meta, Tag } from "../components/SubjectRow";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 
 const LIMIT = 20;
-const COLLECTIONS_CACHE_PREFIX = "collections-";
 const AIRING_REQUEST_DELAY = 700;
 const CLOCK_EPSILON_MS = 1000;
 const EMPTY_COLLECTIONS: UserCollection[] = [];
@@ -117,7 +120,7 @@ const EMPTY_EPISODE_LIST_MAP = new Map<number, Episode[]>();
 const EMPTY_AIRING_RECORD_MAP = new Map<number, AiringCacheRecord>();
 const EMPTY_DISPLAY_LABEL_MAP = new Map<number, string | null>();
 const EMPTY_SUBJECT_ID_SET = new Set<number>();
-const CALENDAR_QUERY_KEY = ["calendar"] as const;
+const CALENDAR_QUERY_KEY = [CALENDAR_CACHE_KEY] as const;
 
 type DataSource = "cache" | "network";
 type QuerySourceName = "collections" | "calendar" | "airingTimes" | "episodes";
@@ -483,18 +486,6 @@ function getBangumiWeekdayFromDateKey(dateKey: string) {
 	return jsDay === 0 ? 7 : jsDay;
 }
 
-const episodeSchedulesInFlight = new Map<number, Promise<Episode[]>>();
-function fetchEpisodeSchedule(subjectId: number) {
-	// 列表成员变化会换组合 key，但同一条目的旧请求仍属于本轮，必须共同等待。
-	const existing = episodeSchedulesInFlight.get(subjectId);
-	if (existing) return existing;
-	const task = getEpisodes(subjectId)
-		.then(data => data.data.filter(episode => episode.type === 0))
-		.finally(() => episodeSchedulesInFlight.delete(subjectId));
-	episodeSchedulesInFlight.set(subjectId, task);
-	return task;
-}
-
 function deriveAiringMaps(
 	episodeListMap: Map<number, Episode[]>,
 	observationMap: Map<number, AiringObservation>,
@@ -581,18 +572,6 @@ function projectCollectionsDisplay(
 		getDisplayLabel(item.collection, item, today, derived.nextAiringAtMap, nowMs)]));
 	return { sorted, displayLabelMap,
 		justUpdatedSubjectIds: getJustUpdatedSubjectIds(sorted, derived.latestAiringAtMap, nowMs) };
-}
-
-async function backfillTotalEpisodesFromCache(collections: UserCollection[]) {
-	await Promise.allSettled(collections.map(async (c) => {
-		const s = c.subject;
-		if ((s.total_episodes ?? 0) > 0 || (s.eps ?? 0) > 0) return;
-		const cached = await readCachedSubjectDeep(s.id);
-		if (cached) {
-			if (cached.total_episodes) s.total_episodes = cached.total_episodes;
-			else if (cached.eps) s.eps = cached.eps;
-		}
-	}));
 }
 
 async function fetchAndCacheCollections(
@@ -697,8 +676,6 @@ export default function CollectionsPage() {
 		initialState.isReturningFromDetail,
 	);
 	const [isManualSyncing, setIsManualSyncing] = useState(false);
-	const manualSyncInFlight = useRef(false);
-	const endRefreshCalendar = useRef<(() => void) | null>(null);
 	const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
 	const isWatching = collectionType === "3";
 	const today = useMemo(
@@ -749,7 +726,7 @@ export default function CollectionsPage() {
 		});
 	}, [queryClient, uname]);
 
-	const collectionsCacheKey = `${COLLECTIONS_CACHE_PREFIX}${collectionType}-${uname}`;
+	const collectionsCacheKey = getCollectionsCacheKey(collectionType, uname);
 	const backgroundRefreshKeys = useMemo(() => isWatching
 		? [collectionsCacheKey, "calendar"] : [collectionsCacheKey], [collectionsCacheKey, isWatching]);
 	const isBackgroundRefreshing = useCacheRefreshPending(queryClient, backgroundRefreshKeys);
@@ -760,6 +737,8 @@ export default function CollectionsPage() {
 		() => ["collections", collectionType, uname] as const,
 		[collectionType, uname],
 	);
+	// 自动刷新的去重范围：同一分类 + 同一账号。切换分类不重写另一分类的冷却。
+	const refreshScope = `${uname}:${collectionType}`;
 
 	useEffect(() => {
 		const syncClock = () => {
@@ -1946,266 +1925,78 @@ export default function CollectionsPage() {
 		});
 	}
 
-	// Ctrl+R：以增量方式把其他端（网页/手机）的收藏与排期同步到本地。
-	// 先对比再写入：未变化的条目不重建、不落盘；失败的数据源单独报告，其余照常更新。
-	const runManualSync = useCallback(async () => {
-		if (!uname) return;
-		if (manualSyncInFlight.current) return;
-		manualSyncInFlight.current = true;
-		setIsManualSyncing(true);
-		// 整批刷新期间保持一次提交：收藏先到、日历后到时，列表不会先闪一帧旧排期。
-		const endRefresh = beginCacheRefresh(queryClient, collectionsCacheKey);
-		if (isWatching) {
-			endRefreshCalendar.current = beginCacheRefresh(queryClient, "calendar");
-		}
-
-		const failed: string[] = [];
-		let changedCollections = 0;
-		let removedCollections = 0;
-		let addedCollections = 0;
-		let calendarChanged = false;
-
-		try {
-			const tasks = (await getCollectionTaskQueue()).filter(
-				(task) => task.payload.username === uname,
-			);
-			const pendingSubjectIds = new Set(
-				tasks.map((task) => task.payload.subjectId),
-			);
-
-			// 强制语义要在发请求前就登记：页面里已挂载的 query 一旦被 refetch，
-			// queryFn 会立刻读取这个起点，晚一步登记就会退回常规新鲜度判断。
-			airingForceWindow.request();
-			episodesForceWindow.request();
-			const airingIds = airingSelection.allEpisodeIds;
-			const airingBefore = readCachedQueryMap<AiringCacheRecord>(
-				queryClient,
-				[["anilist-airing-times-v2"], ["anilist-airing-times-cache-v2"]],
-				airingIds,
-				(record) => record.fetchedAt,
-			);
-
-			// 三个数据源互不依赖，必须并发：串行会把用户可见的等待时间相加。
-			// 新增成员导致的 query key 变化由下一次渲染补齐（仍在同一个强制轮次内）。
-			const collectionsTask = (async () => {
-				// 1. 收藏列表：与页面读取共用同一套“网络 → 队列投影 → 并发保护”顺序。
-				try {
-					// 刷新起点必须在发请求之前取，否则请求期间的本地改动会被当成“服务端最新值”。
-					const baseline =
-						queryClient.getQueryData<PagedResponse<UserCollection>>(
-							collectionsQueryKey,
-						);
-					const networkResult =
-						collectionType === "3"
-							? await getAllUserCollections({ username: uname, type: 3 })
-							: await getUserCollections({
-									username: uname,
-									type: parseInt(collectionType),
-									limit: 100,
-								});
-					// 只有“在看”全量拉取才能推断条目已被其它端移出。
-					const complete = collectionType === "3";
-					const subjectType = Number(collectionType) as UserCollection["type"];
-					// 与常规拉取保持一致：服务端没给总集数时用本地详情补全，
-					// 否则“已看完”判断会退化成 total=0 而重新请求 AniList。
-					const networkData = networkResult.data.map((item) => ({
-						...item,
-						subject: { ...item.subject },
-					}));
-					await backfillTotalEpisodesFromCache(networkData);
-					const serverById = new Map(
-						networkData.map((item) => [item.subject_id, item]),
-					);
-					const cachedFallbacks = (
-						await Promise.all(
-							[...pendingSubjectIds].map((subjectId) =>
-								readCachedCollection(uname, subjectId),
-							),
-						)
-					).filter((item): item is UserCollection => item !== null);
-					let merged = mergePendingCollectionTasks({
-						data: { ...networkResult, data: networkData },
-						currentData: baseline,
-						tasks,
-						cachedCollections: cachedFallbacks,
-						username: uname,
-						collectionType: subjectType,
-					});
-					const liveDuringFetch =
-						queryClient.getQueryData<PagedResponse<UserCollection>>(
-							collectionsQueryKey,
-						);
-					// 请求期间 worker 可能已完成写入；迟到的服务端快照不能覆盖已确认的本地意图。
-					if (baseline && liveDuringFetch && liveDuringFetch !== baseline) {
-						merged = mergeConcurrentCollectionChanges({
-							data: merged,
-							originalData: baseline,
-							liveData: liveDuringFetch,
-							collectionType: subjectType,
-						});
-					}
-
-					const current =
-						queryClient.getQueryData<PagedResponse<UserCollection>>(
-							collectionsQueryKey,
-						) ?? baseline;
-					const diff = diffCollectionList(current, merged, { complete });
-					if (diff.changed) {
-						queryClient.setQueryData(collectionsQueryKey, diff.data);
-					}
-					changedCollections = diff.changedIds.length;
-					addedCollections = diff.addedIds.length;
-					removedCollections = diff.removedIds.length;
-
-					// 2. 只持久化“服务端值原样保留”的条目：乐观任务与并发本地更改都不落盘。
-					const persistable = diff.changedItems.filter((item) => {
-						if (pendingSubjectIds.has(item.subject_id)) return false;
-						const server = serverById.get(item.subject_id);
-						return server !== undefined && isSameJsonPayload(server, item);
-					});
-					if (persistable.length > 0) {
-						await Promise.all([
-							writeCachedSubjectPreviews(persistable.map((item) => item.subject)),
-							...persistable.map((item) => writeCachedCollection(uname, item)),
-						]);
-						for (const item of persistable) {
-							queryClient.setQueryData(["collection", item.subject_id], item);
-						}
-					}
-					// 只在服务端确实“没有这条收藏”时才删除本地行；
-					// 被其它端改到别的分类的条目，行里存的是新分类，必须保留。
-					const removedCandidates = diff.removedIds.filter(
-						(subjectId) => !pendingSubjectIds.has(subjectId),
-					);
-					if (removedCandidates.length > 0) {
-						const removedCached = await Promise.all(
-							removedCandidates.map((subjectId) =>
-								readCachedCollection(uname, subjectId),
-							),
-						);
-						const reallyRemoved = removedCandidates.filter(
-							(_subjectId, index) =>
-								(removedCached[index]?.type ?? subjectType) === subjectType,
-						);
-						await Promise.all(
-							reallyRemoved.map((subjectId) =>
-								deleteCachedCollection(uname, subjectId),
-							),
-						);
-					}
-					if (diff.changed) {
-						// 快照只写服务端确认值：内存里的乐观投影不能变成“已确认”缓存，
-						// 否则下次冷启动会把还没同步成功的本地意图当成服务端状态。
-						// 未变化的条目本来就在缓存里，原样保留即可。
-						const touchedIds = new Set([...diff.changedIds, ...diff.addedIds]);
-						const snapshotData = diff.data.data.filter(
-							(item) =>
-								!touchedIds.has(item.subject_id) ||
-								isSameJsonPayload(serverById.get(item.subject_id), item),
-						);
-						await writeCachedValue(collectionsCacheKey, {
-							...diff.data,
-							data: snapshotData,
-							total: snapshotData.length,
-						});
-						void queryClient.invalidateQueries({
-							queryKey: ["collection-status-map", uname],
-						});
-					}
-				} catch (error) {
-					console.warn("[manual-sync] collections failed", error);
-					failed.push("收藏");
-				}
-			})();
-
-			// 3. 日历：只回写新增/变化的条目预览。
-			const calendarTask = (async () => {
-				if (!isWatching) return;
-				try {
-					const incoming = await getCalendar();
-					const current = queryClient.getQueryData<CalendarItem[]>(
-						CALENDAR_QUERY_KEY,
-					);
-					const diff = diffCalendar(current, incoming);
-					if (!diff.changed) return;
-					queryClient.setQueryData(CALENDAR_QUERY_KEY, diff.calendar);
-					calendarChanged = true;
-					if (diff.changedSubjects.length > 0) {
-						await writeCachedSubjectPreviews(diff.changedSubjects);
-					}
-					await writeCachedValue("calendar", diff.calendar);
-				} catch (error) {
-					console.warn("[manual-sync] calendar failed", error);
-					failed.push("日历");
-				}
-			})();
-
-			// 4. 播出时间与剧集表：只跳过限流窗口，不先清空缓存，界面始终保留旧值。
-			// refetchQueries 自身就会强制发起请求，因此不再先 invalidate（否则同一轮会取两次）。
-			const scheduleTask = Promise.all([
-				queryClient.refetchQueries({
-					queryKey: ["anilist-airing-times-v2"],
-				}),
-				queryClient.refetchQueries({
-					queryKey: ["episodes-schedule-v2"],
-				}),
-			]);
-
-			await Promise.all([collectionsTask, calendarTask, scheduleTask]);
-			const airingAfter = mergeAiringRecordMaps(
-				airingBefore,
-				readCachedQueryMap<AiringCacheRecord>(
-					queryClient,
-					[["anilist-airing-times-v2"]],
-					airingIds,
-					(record) => record.fetchedAt,
-				),
-			);
-			let airingChanges = 0;
-			for (const [subjectId, record] of airingAfter) {
-				if (isSameAiringSchedule(airingBefore?.get(subjectId), record)) continue;
-				airingChanges += 1;
-			}
-
-			const total =
-				changedCollections + addedCollections + removedCollections;
-			const summary = [
-				addedCollections > 0 ? `新增 ${addedCollections}` : null,
-				changedCollections > 0 ? `更新 ${changedCollections}` : null,
-				removedCollections > 0 ? `移出 ${removedCollections}` : null,
-			]
-				.filter(Boolean)
-				.join("、");
-			if (failed.length > 0) {
-				showToast(
-					`${failed.join("、")}同步失败${total > 0 ? `，已更新 ${total} 项收藏` : ""}`,
-					"error",
+	// Ctrl+R 与自动刷新共用同一份整批刷新流程（../api/collections-refresh），
+	// 只有触发方式影响强制语义与提示。
+	const runCollectionsRefresh = useCallback(
+		async (trigger: CollectionsRefreshTrigger, requestedAt?: number) => {
+			if (!uname) return;
+			if (trigger === "auto") {
+				// 自动刷新不另起一套请求：先等首屏本地快照提交、并等页面自己的 SWR 落定；
+				// 等待期间不占整批刷新的锁，手动 Ctrl+R 随时可以插进来。
+				if (!collectionsAutoRefreshGate.canAutoRefresh(refreshScope)) return;
+				await localCacheGate.promise;
+				await waitForCacheRefresh(queryClient, backgroundRefreshKeys);
+				// 排队之后已经有数据落地（冷启动直接拉的首次收藏、或页面自己的 SWR），
+				// 这一轮就没有存在的意义，避开“刚打开软件就重复发一批请求”。
+				const landedAt = Math.max(
+					getLastCacheRefreshAt(queryClient, backgroundRefreshKeys),
+					queryClient.getQueryState(collectionsQueryKey)?.dataUpdatedAt ?? 0,
 				);
-			} else if (total > 0) {
-				showToast(`已同步 ${summary} 项收藏`);
-			} else if (calendarChanged) {
-				showToast("日历已更新");
-			} else if (airingChanges > 0) {
-				showToast(`播出时间已更新 ${airingChanges} 项`);
-			} else {
-				showToast("已是最新");
+				if (requestedAt !== undefined && landedAt >= requestedAt) return;
 			}
-		} finally {
-			endRefresh();
-			endRefreshCalendar.current?.();
-			endRefreshCalendar.current = null;
-			manualSyncInFlight.current = false;
-			if (isMounted.current) setIsManualSyncing(false);
-		}
-	}, [
-		airingSelection,
-		collectionType,
-		collectionsCacheKey,
-		collectionsQueryKey,
-		isWatching,
-		queryClient,
-		uname,
-	]);
+			// 冷却只在真正开始一轮时记录，被跳过的排队不算。
+			if (!collectionsAutoRefreshGate.tryBegin()) return;
+			collectionsAutoRefreshGate.markStarted(refreshScope);
+			if (trigger === "manual") setIsManualSyncing(true);
+			try {
+				const result = await refreshCollectionsData(queryClient, {
+					trigger,
+					collectionType,
+					username: uname,
+					collectionsQueryKey,
+					collectionsCacheKey,
+					includeSchedule: isWatching,
+					allEpisodeIds: airingSelection.allEpisodeIds,
+				});
+				const toast = getCollectionsRefreshToast(result, trigger);
+				if (toast) showToast(toast.message, toast.variant);
+			} finally {
+				collectionsAutoRefreshGate.end();
+				if (trigger === "manual" && isMounted.current) setIsManualSyncing(false);
+			}
+		},
+		[
+			airingSelection.allEpisodeIds,
+			backgroundRefreshKeys,
+			collectionType,
+			collectionsCacheKey,
+			collectionsQueryKey,
+			isWatching,
+			localCacheGate,
+			queryClient,
+			refreshScope,
+			uname,
+		],
+	);
+
+	// 自动刷新：把排队时刻一并带下去，用于判断这一轮是否已被页面自己的 SWR 完成。
+	const runAutoRefresh = useCallback(async (requestedAt: number) => {
+		if (!uname) return;
+		await runCollectionsRefresh("auto", requestedAt);
+	}, [runCollectionsRefresh, uname]);
+
+	// 触发节点由 ../api/auto-refresh 统一排队（启动一次 + 窗口每次重新显示），
+	// 这里只消费排队请求；未拿到用户名时保留请求，等登录完成再跑。
+	useEffect(() => {
+		const run = () => {
+			if (!uname) return;
+			const requestedAt = consumeCollectionsAutoRefreshRequest();
+			if (!requestedAt) return;
+			void runAutoRefresh(requestedAt);
+		};
+		run();
+		return subscribeCollectionsAutoRefresh(run);
+	}, [runAutoRefresh, uname]);
 
 	// Keyboard navigation
 	useKeyboardShortcuts(
@@ -2215,7 +2006,7 @@ export default function CollectionsPage() {
 				mod: true,
 				when: () => isWatching,
 				handler: () => {
-					void runManualSync();
+					void runCollectionsRefresh("manual");
 				},
 			},
 			{
