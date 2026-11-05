@@ -14,7 +14,12 @@ import {
 import { recordAuthEvent } from "./api/auth-diagnostics";
 import { useAuth } from "./hooks/useAuth";
 import { isTauri } from "./api/tauri-fetch";
-import { DEFAULT_SHORTCUT, loadStoredShortcut } from "./api/shortcut";
+import {
+  DEFAULT_SHORTCUT,
+  SHORTCUT_ENABLED_EVENT,
+  loadStoredShortcut,
+} from "./api/shortcut";
+import { listen } from "@tauri-apps/api/event";
 import { startCollectionTaskWorker } from "./api/collection-tasks";
 import {
   startCollectionsAutoRefreshLifecycle,
@@ -87,6 +92,27 @@ export default function App() {
     const stored = loadStoredShortcut();
     if (stored === DEFAULT_SHORTCUT) return;
     invoke("register_shortcut", { accelerator: stored }).catch(() => {});
+  }, []);
+
+  // 托盘菜单切换全局快捷键开关后的反馈：菜单一关窗口就没了，
+  // 不给提示的话用户无法确认快捷键到底有没有生效。
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    listen<boolean>(SHORTCUT_ENABLED_EVENT, (e) => {
+      void invoke("show_toast", {
+        message: e.payload ? "全局快捷键已启用" : "全局快捷键已禁用",
+        durationMs: 1600,
+      }).catch(() => {});
+    }).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {

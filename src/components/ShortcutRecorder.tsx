@@ -3,12 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   DEFAULT_SHORTCUT,
+  SHORTCUT_ENABLED_EVENT,
   eventToAccelerator,
   formatAccelerator,
+  getShortcutEnabled,
   isMac,
   loadStoredShortcut,
   saveStoredShortcut,
 } from "../api/shortcut";
+import { isTauri } from "../api/tauri-fetch";
 
 interface Props {
   className?: string;
@@ -16,10 +19,31 @@ interface Props {
 
 export default function ShortcutRecorder({ className }: Props) {
   const [accelerator, setAccelerator] = useState<string>(loadStoredShortcut());
+  const [enabled, setEnabled] = useState(true);
   const [recording, setRecording] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const boxRef = useRef<HTMLButtonElement>(null);
+
+  // 总开关由托盘菜单里的勾选项控制，这里只跟随后端状态展示。
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    void getShortcutEnabled().then((v) => {
+      if (!cancelled) setEnabled(v);
+    });
+    let unlisten: (() => void) | undefined;
+    listen<boolean>(SHORTCUT_ENABLED_EVENT, (e) => setEnabled(e.payload)).then(
+      (un) => {
+        if (cancelled) un();
+        else unlisten = un;
+      },
+    );
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!recording) return;
@@ -137,9 +161,14 @@ export default function ShortcutRecorder({ className }: Props) {
         </button>
       </div>
       {error && <p className="text-[12px] text-danger mt-1.5">{error}</p>}
-      {!error && (
+      {!error && enabled && (
         <p className="text-[12px] text-fg-tertiary mt-1.5">
           点击后按下组合键录制
+        </p>
+      )}
+      {!error && !enabled && (
+        <p className="text-[12px] text-star mt-1.5">
+          全局快捷键当前已禁用，可在托盘图标右键菜单中重新勾选「Global Shortcut」
         </p>
       )}
     </div>

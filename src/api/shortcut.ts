@@ -1,6 +1,9 @@
 // Shortcut helpers: convert KeyboardEvent <-> Tauri accelerator string
 // Tauri accelerator format: "CmdOrCtrl+Shift+B"
 
+import { invoke } from "@tauri-apps/api/core";
+import { isTauri } from "./tauri-fetch";
+
 const SHORTCUT_KEY = "bangumini_shortcut";
 export const DEFAULT_SHORTCUT = "CmdOrCtrl+Shift+B";
 
@@ -95,6 +98,21 @@ function normalizeKey(e: KeyboardEvent): string | null {
     Backquote: "`",
   };
   return named[code] ?? null;
+}
+
+// 全局快捷键开关：开关状态由 Rust 端进程内维护（托盘勾选项为唯一入口），
+// 前端只读回状态用于设置页展示。
+
+export const SHORTCUT_ENABLED_EVENT = "shortcut-enabled-changed";
+
+/** 当前全局快捷键是否启用；非 Tauri 环境恒为 true。 */
+export async function getShortcutEnabled(): Promise<boolean> {
+  if (!isTauri()) return true;
+  try {
+    return await invoke<boolean>("get_shortcut_enabled");
+  } catch {
+    return true;
+  }
 }
 
 // Pretty-print an accelerator for the UI. Replaces "CmdOrCtrl"/"Cmd" with the

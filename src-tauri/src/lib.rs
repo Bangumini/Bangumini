@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 mod auth_diagnostics;
 mod offset_sync;
 use auth_diagnostics::record_auth_event;
@@ -71,6 +71,65 @@ const DEFAULT_SHORTCUT: &str = "CmdOrCtrl+Shift+B";
 
 struct ShortcutHolder {
     current: StdMutex<Option<(Shortcut, String)>>,
+}
+
+/// 托盘菜单里的“Global Shortcut”勾选项 ID。
+const TRAY_SHORTCUT_ITEM_ID: &str = "global-shortcut";
+/// 全局快捷键是否启用。仅在当次运行内有效（不落盘），重启后恢复启用。
+static SHORTCUT_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// 全局快捷键启用状态变化时发给前端的事件名。
+const SHORTCUT_ENABLED_EVENT: &str = "shortcut-enabled-changed";
+
+/// 把托盘里的勾选项交给状态维护逻辑使用。
+struct TrayShortcutItem(tauri::menu::CheckMenuItem<tauri::Wry>);
+
+/// 按 `SHORTCUT_ENABLED` 同步当前快捷键的注册状态。
+///
+/// 只挂/卸，不改用户配置（`ShortcutHolder` 里的 accelerator 始终保留）。
+/// 以插件实际注册状态为准，避免和 hotkey 录制期间临时卸载的流程打架。
+fn apply_shortcut_registration(app: &tauri::AppHandle) -> Result<(), String> {
+    let current = app
+        .state::<ShortcutHolder>()
+        .current
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+
+    let Some((shortcut, accelerator)) = current else {
+        return Ok(());
+    };
+
+    let registered = app.global_shortcut().is_registered(shortcut);
+    if SHORTCUT_ENABLED.load(Ordering::SeqCst) {
+        if !registered {
+            install_shortcut(app, &accelerator)?;
+        }
+    } else if registered {
+        let _ = app.global_shortcut().unregister(shortcut);
+    }
+    Ok(())
+}
+
+/// 切换全局快捷键总开关：同步注册状态、托盘勾选和前端事件。
+///
+/// 重挂失败时把勾选和状态一起回滚，避免菜单显示“已启用”但快捷键实际不生效。
+fn set_shortcut_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let previous = SHORTCUT_ENABLED.swap(enabled, Ordering::SeqCst);
+    if let Err(err) = apply_shortcut_registration(app) {
+        SHORTCUT_ENABLED.store(previous, Ordering::SeqCst);
+        let _ = apply_shortcut_registration(app);
+        if let Some(item) = app.try_state::<TrayShortcutItem>() {
+            let _ = item.0.set_checked(previous);
+        }
+        return Err(err);
+    }
+
+    if let Some(item) = app.try_state::<TrayShortcutItem>() {
+        let _ = item.0.set_checked(enabled);
+    }
+    let _ = app.emit(SHORTCUT_ENABLED_EVENT, enabled);
+    Ok(())
 }
 
 static IS_DRAGGING: AtomicBool = AtomicBool::new(false);
@@ -280,6 +339,13 @@ fn install_shortcut(app: &tauri::AppHandle, accelerator: &str) -> Result<(), Str
     let mut current = holder.current.lock().map_err(|e| e.to_string())?;
     if let Some((old, _)) = current.take() {
         let _ = app.global_shortcut().unregister(old);
+    }
+
+    // 用户在托盘里临时关掉了全局快捷键：只记住新配置，不向系统注册。
+    // 重新勾选时 apply_shortcut_registration 会拿这里的 accelerator 再挂上。
+    if !SHORTCUT_ENABLED.load(Ordering::SeqCst) {
+        *current = Some((new_shortcut, accelerator.to_string()));
+        return Ok(());
     }
 
     let w = window.clone();
@@ -672,6 +738,7 @@ pub fn run() {
             start_oauth,
             wait_oauth_callback,
             get_shortcut,
+            get_shortcut_enabled,
             register_shortcut,
             set_autostart,
             get_autostart,
@@ -687,7 +754,7 @@ pub fn run() {
         ])
         .setup(|app| {
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-            use tauri::menu::{MenuBuilder, MenuItemBuilder};
+            use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 
             // Initialize OAuth state
             app.manage(Arc::new(Mutex::new(OAuthState { listeners: None })));
@@ -749,9 +816,17 @@ pub fn run() {
 
             // --- Tray menu ---
             let show_hide = MenuItemBuilder::with_id("toggle", "Show/Hide").build(app)?;
+            let shortcut_item =
+                CheckMenuItemBuilder::with_id(TRAY_SHORTCUT_ITEM_ID, "Global Shortcut")
+                    .checked(true)
+                    .build(app)?;
+            app.manage(TrayShortcutItem(shortcut_item.clone()));
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app)
                 .item(&show_hide)
+                .separator()
+                .item(&shortcut_item)
+                .separator()
                 .item(&quit)
                 .build()?;
 
@@ -767,6 +842,15 @@ pub fn run() {
                     match event.id().as_ref() {
                         "toggle" => {
                             toggle_window(&w_tray, &g_menu);
+                        }
+                        // 新增状态取自后端真实状态（取反），不依赖菜单自己的自动勾选：
+                        // 托盘菜单是否会由 muda 自动翻转勾选依赖平台实现，
+                        // 以状态为准再 set_checked 回写能同时兼容两种行为。
+                        TRAY_SHORTCUT_ITEM_ID => {
+                            let enabled = !SHORTCUT_ENABLED.load(Ordering::SeqCst);
+                            if let Err(err) = set_shortcut_enabled(app, enabled) {
+                                eprintln!("[shortcut] 切换全局快捷键失败: {err}");
+                            }
                         }
                         "quit" => {
                             app.exit(0);
@@ -897,6 +981,12 @@ fn register_shortcut(app: tauri::AppHandle, accelerator: String) -> Result<(), S
         return Err("快捷键不能为空".into());
     }
     install_shortcut(&app, trimmed)
+}
+
+/// 当前全局快捷键开关状态（只在进程内有效，重启后恢复启用）。
+#[tauri::command]
+fn get_shortcut_enabled() -> bool {
+    SHORTCUT_ENABLED.load(Ordering::SeqCst)
 }
 
 #[tauri::command]
@@ -1190,15 +1280,9 @@ fn stop_hotkey_recording(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         hotkey_recorder::stop();
-        let acc = app
-            .state::<ShortcutHolder>()
-            .current
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, s)| s.clone()));
-        if let Some(acc) = acc {
-            let _ = install_shortcut(&app, &acc);
-        }
+        // 恢复配置的快捷键；但如果用户在托盘里临时关了总开关，就不要重新注册。
+        // 恢复失败不向上报错：录制已结束，没必要把错误抬到 UI。
+        let _ = apply_shortcut_registration(&app);
     }
     #[cfg(not(windows))]
     {
