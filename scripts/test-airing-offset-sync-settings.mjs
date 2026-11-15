@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const ts = require("typescript");
 const { JSDOM } = require("jsdom");
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://bangumini.test/" });
-for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Event", "MouseEvent", "KeyboardEvent"]) {
+for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Event", "MouseEvent", "KeyboardEvent", "localStorage"]) {
 	Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -32,7 +32,10 @@ function load(relative) {
 		if (id.startsWith("@shared/")) return load(`shared/${id.slice(8)}.ts`);
 		if (id.startsWith(".")) {
 			const target = resolve(dirname(path), id);
-			return load(target.endsWith(".ts") ? target : `${target}.ts`);
+			// 相对导入可能带或不带扩展名，tsx 优先（icons.tsx 等）
+			if (existsSync(target)) return load(target);
+			if (existsSync(`${target}.tsx`)) return load(`${target}.tsx`);
+			return load(`${target}.ts`);
 		}
 		return require(id);
 	}
@@ -44,6 +47,14 @@ const page = readFileSync(resolve(project, "src/pages/SettingsPage.tsx"), "utf8"
 assert.match(page, /<AiringOffsetSyncSettings\s*\/>/);
 assert.ok(page.indexOf("<AiringOffsetSyncSettings") > page.indexOf("Access Token"));
 assert.ok(page.indexOf("<AiringOffsetSyncSettings") < page.indexOf("全局快捷键"));
+// 同步卡片在 SettingsPage 中保持独立卡片（自带折叠头部），不包进通用折叠区：
+// AiringOffsetSyncSettings 标签的直接父级是 SettingsSection 而非 CollapsibleSection
+{
+	const tag = page.indexOf("<AiringOffsetSyncSettings");
+	const wrap = page.lastIndexOf("<SettingsSection>", tag);
+	const between = page.slice(wrap + 1, tag);
+	assert.ok(wrap >= 0 && !between.includes("CollapsibleSection"), "同步卡片应直接包在 SettingsSection 中");
+}
 
 const secret = "private-password-never-render";
 const savedConfig = (account = "alice") => ({ provider: "webdav", autoSync: true, prefix: "bangumini", url: `https://${account}.example/dav`, username: `${account}-private-user`, password: secret });
@@ -91,6 +102,11 @@ async function reset() {
 	host?.remove(); host = null; root = null;
 }
 const text = () => host.textContent;
+// 折叠头部按钮：aria-label="同步"，展开区按钮在下方表单区
+function expandToggle() {
+	const found = [...host.querySelectorAll("button")].find(element => element.getAttribute("aria-expanded") !== null && (element.getAttribute("aria-label") ?? element.textContent).includes("同步"));
+	assert.ok(found, "缺少同步折叠头部按钮"); return found;
+}
 function name(element) {
 	return element.getAttribute("aria-label") ?? (element.getAttribute("aria-labelledby")?.split(" ").map(id => document.getElementById(id)?.textContent).join(" ")) ?? element.textContent;
 }
@@ -103,11 +119,22 @@ function field(label) {
 	assert.ok(found, `缺少字段 ${label}`); return document.getElementById(found.htmlFor);
 }
 function disabled(label) { return button(label).matches(":disabled"); }
+// 展开同步卡片（折叠头部按钮）；需先展开后才能操作表单区按钮
+async function expandSync() {
+	const header = expandToggle();
+	if (header.getAttribute("aria-expanded") === "true") return;
+	await act(async () => {
+		header.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		// 等待 getConfig 微任务完成，表单才真正挂载
+		await new Promise(resolve => setTimeout(resolve, 0));
+	});
+}
 async function click(label, repeat = 1) {
 	const element = button(label);
 	assert.equal(element.matches(":disabled"), false, `${label} 不应禁用`);
 	await act(async () => { for (let i = 0; i < repeat; i++) element.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
 }
+// 需要表单区的用例先展开同步卡片；旧用例语义中的“同步开关”即 Toggle 本身
 async function input(label, value) {
 	const element = field(label);
 	await act(async () => {
@@ -124,14 +151,54 @@ async function test(label, work) {
 	finally { await reset(); }
 }
 
-await test("默认关闭不读凭证，开启才恢复；字段掩码、键盘隔离、独立自动同步", async () => {
+await test("默认收起不读凭证不挂载表单；展开后开关与摘要可见，再收起卸载表单", async () => {
 	const api = manager({}, savedConfig());
 	await render(api);
-	assert.equal(button("同步").getAttribute("role"), "switch");
-	assert.equal(button("同步").getAttribute("aria-checked"), "false");
+	// 默认收起：无表单、无开关、不发起任何读取
+	const header = expandToggle();
+	assert.equal(header.getAttribute("aria-expanded"), "false");
 	assert.equal(host.querySelectorAll("input").length, 0);
 	assert.deepEqual(api.calls, []);
-	await click("同步");
+	assert.match(text(), /已停用/);
+	// 展开后先出现开关行，仍未读取配置；开启同步后表单才挂载并读取配置
+	await act(async () => header.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+	assert.equal(expandToggle().getAttribute("aria-expanded"), "true");
+	assert.equal(button("同步开关").getAttribute("aria-checked"), "false");
+	assert.deepEqual(api.calls, []);
+	await click("同步开关");
+	assert.equal(field("WebDAV 地址").value, savedConfig().url);
+	assert.deepEqual(api.calls, [["enabled", true], ["get"]]);
+	// 再收起：表单卸载，开关调用保持不变
+	await act(async () => expandToggle().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+	assert.equal(host.querySelector("input"), null);
+	assert.equal(api.calls.filter(call => call[0] === "enabled").length, 1);
+});
+
+await test("同步开启时收起仍能一键停用；展开状态持久化到 localStorage", async () => {
+	const api = manager({ enabled: true }, savedConfig());
+	await render(api);
+	assert.match(text(), /已启用/);
+	// 收起状态下直接关开关：不需要先展开
+	await click("同步开关");
+	assert.deepEqual(api.calls, [["enabled", false]]);
+	assert.match(text(), /已停用/);
+	// 折叠状态写入 localStorage（readSectionExpanded 使用同一键）
+	await act(async () => expandToggle().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+	assert.equal(expandToggle().getAttribute("aria-expanded"), "true");
+	assert.equal(JSON.parse(window.localStorage.getItem("bangumini_settings_sections_v1")).sync, true);
+	await act(async () => expandToggle().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+	assert.equal(JSON.parse(window.localStorage.getItem("bangumini_settings_sections_v1")).sync, false);
+});
+
+await test("默认收起且收起状态下开启同步；字段掩码、键盘隔离、独立自动同步", async () => {
+	const api = manager({}, savedConfig());
+	await render(api);
+	// 头部一键开启，无需展开
+	await click("同步开关");
+	assert.equal(expandToggle().getAttribute("aria-expanded"), "false");
+	assert.equal(host.querySelectorAll("input").length, 0);
+	// 展开检查表单与掩码
+	await act(async () => expandToggle().dispatchEvent(new MouseEvent("click", { bubbles: true })));
 	assert.equal(field("WebDAV 地址").value, savedConfig().url);
 	assert.equal(field("WebDAV 用户名").type, "password");
 	assert.equal(field("WebDAV 密码").type, "password");
@@ -143,7 +210,7 @@ await test("默认关闭不读凭证，开启才恢复；字段掩码、键盘�
 	window.removeEventListener("keydown", listener);
 	assert.equal(escaped, false);
 	await click("自动同步");
-	assert.equal(button("同步").getAttribute("aria-checked"), "true");
+	assert.equal(button("同步开关").getAttribute("aria-checked"), "true");
 	assert.equal(disabled("立即同步"), true);
 	await click("保存配置");
 	assert.equal(api.calls.find(call => call[0] === "save")[1].autoSync, false);
@@ -153,8 +220,9 @@ await test("默认关闭不读凭证，开启才恢复；字段掩码、键盘�
 
 await test("未登录或恢复未完成禁止操作与挂载", async () => {
 	const api = manager({ account: null, enabled: true, ready: false }, savedConfig());
-	await render(api); assert.equal(disabled("同步"), true); assert.equal(host.querySelector("input"), null);
-	await publish(api, { account: "alice" }); assert.equal(disabled("同步"), true); assert.equal(host.querySelector("input"), null);
+	await render(api); assert.equal(disabled("同步开关"), true); assert.equal(host.querySelector("input"), null);
+	await expandSync();
+	await publish(api, { account: "alice" }); assert.equal(disabled("同步开关"), true); assert.equal(host.querySelector("input"), null);
 	assert.deepEqual(api.calls, []);
 	await publish(api, { ready: true }); assert.equal(field("WebDAV 密码").value, secret);
 	await publish(api, { ready: false }); assert.equal(host.querySelector("input"), null);
@@ -163,6 +231,7 @@ await test("未登录或恢复未完成禁止操作与挂载", async () => {
 await test("配置验证、HTTPS、防重复保存与只读连接测试", async () => {
 	const api = manager({ enabled: true });
 	await render(api); assert.equal(disabled("保存配置"), true); assert.equal(disabled("测试读取连接（只读）"), true);
+	await expandSync();
 	await input("WebDAV 地址", "http://insecure.example/dav");
 	await input("WebDAV 用户名", "private-login"); await input("WebDAV 密码", secret);
 	assert.equal(disabled("保存配置"), true);
@@ -175,7 +244,7 @@ await test("配置验证、HTTPS、防重复保存与只读连接测试", async 
 	assert.equal(api.calls.filter(call => call[0] === "save").length, 1);
 	assert.equal(disabled("测试读取连接（只读）"), true);
 	assert.equal(field("WebDAV 地址").matches(":disabled"), true);
-	assert.equal(disabled("同步"), false);
+	assert.equal(disabled("同步开关"), false);
 	await settle(saving);
 	const stored = api.calls.find(call => call[0] === "save")[1];
 	assert.equal(stored.url, "https://example.test/dav"); assert.equal(stored.prefix, "bangumini/subdir");
@@ -189,6 +258,7 @@ await test("配置验证、HTTPS、防重复保存与只读连接测试", async 
 
 await test("协议切换、S3/R2 字段、可选临时凭证、path-style 与保存", async () => {
 	const api = manager({ enabled: true }, savedConfig()); await render(api);
+	await expandSync();
 	await click("S3 / R2");
 	assert.equal(host.querySelectorAll("input[type=password]").length, 3);
 	assert.equal(host.querySelector("label")?.textContent, "S3 Endpoint");
@@ -214,6 +284,7 @@ await test("逐条冲突选择与断开同步", async () => {
 		{ subjectId: 1, local: record(0), remote: record(7) }, { subjectId: 2, local: record(-1), remote: record(1) },
 	] }, savedConfig());
 	await render(api); assert.match(text(), /冲突：2 条/); assert.match(text(), /0 天/);
+	await expandSync();
 	await click("条目 1：保留本机"); await click("条目 2：采用远端");
 	assert.deepEqual(api.calls.filter(call => call[0] === "resolve"), [["resolve", 1, "local"], ["resolve", 2, "remote"]]);
 	await click("断开同步"); assert.equal(field("WebDAV 密码").value, "");
@@ -224,24 +295,26 @@ await test("同步中仍可关闭，关闭立即卸载表单、保留配置且�
 	const api = manager({ enabled: true }, savedConfig()); const syncing = deferred();
 	api.handlers.sync = () => { api.publish({ phase: "syncing" }); return syncing.promise; };
 	await render(api); await click("立即同步"); assert.match(text(), /同步中/);
-	assert.equal(disabled("保存配置"), true); assert.equal(disabled("同步"), false);
-	await click("同步"); assert.equal(host.querySelector("input"), null);
-	assert.equal(button("同步").getAttribute("aria-checked"), "false");
+	await expandSync();
+	assert.equal(disabled("保存配置"), true); assert.equal(disabled("同步开关"), false);
+	await click("同步开关"); assert.equal(host.querySelector("input"), null);
+	assert.equal(button("同步开关").getAttribute("aria-checked"), "false");
 	await settle(syncing); assert.ok(!text().includes("同步请求已完成"));
-	await click("同步"); assert.equal(field("WebDAV 密码").value, secret);
+	await click("同步开关"); assert.equal(field("WebDAV 密码").value, secret);
 	assert.ok(!text().includes("同步请求已完成"));
 });
 
 await test("关闭取消挂载及只读操作；重新开启不接受旧凭证与反馈", async () => {
 	const api = manager({ enabled: true }, savedConfig()); const oldRead = deferred();
 	api.handlers.get = () => oldRead.promise; await render(api);
-	await click("同步"); assert.equal(host.querySelector("input"), null);
-	api.handlers.get = async () => savedConfig("fresh"); await click("同步");
+	await expandSync();
+	await click("同步开关"); assert.equal(host.querySelector("input"), null);
+	api.handlers.get = async () => savedConfig("fresh"); await click("同步开关");
 	await settle(oldRead, savedConfig("stale"));
 	assert.equal(field("WebDAV 地址").value, savedConfig("fresh").url);
 	const reading = deferred(); api.handlers.test = () => reading.promise;
-	await click("测试读取连接（只读）"); assert.equal(disabled("同步"), false);
-	await click("同步"); assert.equal(host.querySelector("input"), null);
+	await click("测试读取连接（只读）"); assert.equal(disabled("同步开关"), false);
+	await click("同步开关"); assert.equal(host.querySelector("input"), null);
 	await settle(reading, { exists: true }); assert.ok(!text().includes("已读取偏置文件"));
 	assert.deepEqual(api.calls.filter(call => call[0] === "enabled"), [["enabled", false], ["enabled", true], ["enabled", false]]);
 });
@@ -249,6 +322,7 @@ await test("关闭取消挂载及只读操作；重新开启不接受旧凭证�
 await test("账号切换、迟到凭证与旧账号操作反馈不能泄露", async () => {
 	const api = manager({ enabled: true }, savedConfig()); const oldRead = deferred();
 	api.handlers.get = () => oldRead.promise; await render(api); assert.match(text(), /正在读取/);
+	await expandSync();
 	api.handlers.get = async () => savedConfig("bob");
 	await publish(api, { account: "bob" }); assert.equal(field("WebDAV 地址").value, savedConfig("bob").url);
 	await settle(oldRead, savedConfig("alice")); assert.equal(field("WebDAV 地址").value, savedConfig("bob").url);
@@ -262,12 +336,15 @@ await test("账号切换、迟到凭证与旧账号操作反馈不能泄露", as
 await test("同账号更换 manager 立即卸载旧凭证、旧锁与迟到反馈", async () => {
 	const first = manager({ enabled: true }, savedConfig("alice")); const late = deferred();
 	first.handlers.get = () => late.promise; await render(first);
+	await expandSync();
 	const second = manager({ enabled: true }, savedConfig("second")); await render(second);
+	await expandSync();
 	assert.equal(field("WebDAV 地址").value, savedConfig("second").url);
 	await settle(late, savedConfig("alice")); assert.equal(field("WebDAV 地址").value, savedConfig("second").url);
 	const oldToggle = deferred(); second.handlers.enabled = () => oldToggle.promise;
-	await click("同步"); assert.equal(disabled("同步"), true);
-	const third = manager({}, savedConfig("third")); await render(third); assert.equal(disabled("同步"), false);
+	await click("同步开关"); assert.equal(disabled("同步开关"), true);
+	const third = manager({}, savedConfig("third")); await render(third); assert.equal(disabled("同步开关"), false);
+	await expandSync();
 	await act(async () => oldToggle.reject(new Error(secret)));
 	assert.ok(!text().includes("开关保存失败")); assert.equal(host.querySelector("input"), null);
 });
@@ -275,20 +352,22 @@ await test("同账号更换 manager 立即卸载旧凭证、旧锁与迟到反�
 await test("配置读取失败可重试、开关保存失败与保存期间锁", async () => {
 	const api = manager({ enabled: true }, savedConfig()); api.handlers.get = async () => { throw new Error(secret); };
 	await render(api); assert.match(text(), /读取安全配置失败/); assert.equal(host.querySelector("input"), null); noSecrets();
+	await expandSync();
 	api.handlers.get = async () => savedConfig(); await click("重试读取配置"); assert.equal(field("WebDAV 密码").value, secret);
 	const toggling = deferred(); api.handlers.enabled = () => toggling.promise;
-	await click("同步", 2); assert.equal(api.calls.filter(call => call[0] === "enabled").length, 1);
-	assert.equal(disabled("同步"), true);
-	await act(async () => toggling.reject(new Error(secret))); assert.equal(disabled("同步"), false);
+	await click("同步开关", 2); assert.equal(api.calls.filter(call => call[0] === "enabled").length, 1);
+	assert.equal(disabled("同步开关"), true);
+	await act(async () => toggling.reject(new Error(secret))); assert.equal(disabled("同步开关"), false);
 	assert.match(text(), /同步开关保存失败，请重试/); noSecrets();
-	delete api.handlers.enabled; await click("同步"); assert.equal(host.querySelector("input"), null); assert.ok(!text().includes("保存失败"));
-	api.handlers.enabled = async () => { throw new Error(secret); }; await click("同步");
-	assert.equal(host.querySelector("input"), null); assert.equal(button("同步").getAttribute("aria-checked"), "false"); noSecrets();
+	delete api.handlers.enabled; await click("同步开关"); assert.equal(host.querySelector("input"), null); assert.ok(!text().includes("保存失败"));
+	api.handlers.enabled = async () => { throw new Error(secret); }; await click("同步开关");
+	assert.equal(host.querySelector("input"), null); assert.equal(button("同步开关").getAttribute("aria-checked"), "false"); noSecrets();
 });
 
 await test("公开状态与操作异常均不渲染秘密；失败后可以重试", async () => {
 	const api = manager({ enabled: true, error: `https://user:${secret}@example.test?token=private-session`, phase: "error" }, savedConfig());
 	await render(api); assert.match(text(), /同步未完成/); noSecrets("private-session");
+	await expandSync();
 	for (const [label, method] of [["测试读取连接（只读）", "test"], ["立即同步", "sync"]]) {
 		api.handlers[method] = async () => { throw new Error(secret); };
 		await click(label); assert.match(text(), /失败，请检查配置或网络后重试/); noSecrets(); delete api.handlers[method];

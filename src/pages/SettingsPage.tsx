@@ -7,6 +7,10 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { clearToken, setToken, isLoggedIn } from "../api/oauth";
 import {
+	readSectionExpanded,
+	writeSectionExpanded,
+} from "../api/settings-sections";
+import {
 	setCopySubjectTitleWithSeason,
 	shouldCopySubjectTitleWithSeason,
 } from "../api/subject-title-copy";
@@ -23,7 +27,7 @@ import {
 } from "../hooks/useAutoUpdateCheck";
 import ShortcutRecorder from "../components/ShortcutRecorder";
 import AiringOffsetSyncSettings from "../components/AiringOffsetSyncSettings";
-import { GithubIcon, ExternalIcon } from "../components/icons";
+import { GithubIcon, ExternalIcon, ChevronDownIcon } from "../components/icons";
 
 type DistributionKind = "installer" | "portable";
 
@@ -110,6 +114,65 @@ function SettingsSection({
 				</h3>
 			)}
 			{children}
+		</section>
+	);
+}
+
+// 设置页分区的本地存储标识
+export type SettingsSectionKey =
+	| "account"
+	| "sync"
+	| "shortcut"
+	| "proxy"
+	| "general"
+	| "update";
+
+// 可折叠设置分区：头部整行可点击（标题 + 右侧摘要 + 旋转箭头），
+// 收起时卸载内容，展开后重新挂载（同步卡片借此避免在收起时读取凭证）。
+function CollapsibleSection({
+	sectionKey,
+	title,
+	summary,
+	children,
+}: {
+	sectionKey: SettingsSectionKey;
+	title: string;
+	summary?: string;
+	children: ReactNode;
+}) {
+	// 同步分区体积最大，默认收起；其余默认展开
+	const [expanded, setExpanded] = useState(() =>
+		readSectionExpanded(sectionKey, sectionKey !== "sync"),
+	);
+
+	const toggle = () => {
+		const next = !expanded;
+		setExpanded(next);
+		writeSectionExpanded(sectionKey, next);
+	};
+
+	return (
+		<section className="rounded-card border border-line bg-elevated/50">
+			<button
+				type="button"
+				onClick={toggle}
+				aria-expanded={expanded}
+				className="w-full flex items-center gap-2 px-4 py-3 text-left cursor-pointer group"
+			>
+				<span className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary group-hover:text-fg-secondary transition-colors">
+					{title}
+				</span>
+				{summary && (
+					<span className="min-w-0 truncate text-[11px] text-fg-tertiary/80 group-hover:text-fg-secondary transition-colors">
+						{summary}
+					</span>
+				)}
+				<ChevronDownIcon
+					size={14}
+					className={`ml-auto shrink-0 text-fg-tertiary group-hover:text-fg-secondary transition-transform duration-150 ${expanded ? "rotate-180" : ""}`}
+				/>
+			</button>
+			{expanded && <div className="px-4 pb-4">{children}</div>}
 		</section>
 	);
 }
@@ -360,7 +423,7 @@ export default function SettingsPage() {
 				</button>
 			)}
 
-			<SettingsSection title="账户">
+			<CollapsibleSection sectionKey="account" title="账户" summary={authenticated ? "已登录" : "未登录"}>
 				<label className="block text-[13px] text-fg-secondary mb-1.5">
 					Access Token
 				</label>
@@ -395,18 +458,19 @@ export default function SettingsPage() {
 					</a>{" "}
 					生成
 				</p>
-			</SettingsSection>
+			</CollapsibleSection>
 
-			{/* 同步配置自带分组标题（开关行）与表单，直接作为一张卡片展示 */}
+			{/* 同步配置自带折叠头部（开关行 + 摘要 + 箭头），直接作为一张独立卡片展示；
+					默认收起且收起时不挂载表单、不读取凭证，展开状态记忆在卡片内部处理 */}
 			<SettingsSection>
 				<AiringOffsetSyncSettings />
 			</SettingsSection>
 
-			<SettingsSection title="全局快捷键">
+			<CollapsibleSection sectionKey="shortcut" title="全局快捷键">
 				<ShortcutRecorder />
-			</SettingsSection>
+			</CollapsibleSection>
 
-			<SettingsSection title="代理">
+			<CollapsibleSection sectionKey="proxy" title="代理" summary={proxy.enabled ? "已启用" : "未启用"}>
 				<SettingsList>
 					<SettingsRow label="启用代理">
 						<Toggle
@@ -481,9 +545,21 @@ export default function SettingsPage() {
 						</button>
 					</div>
 				)}
-			</SettingsSection>
+			</CollapsibleSection>
 
-			<SettingsSection title="通用">
+			<CollapsibleSection
+				sectionKey="general"
+				title="通用"
+				summary={
+					[
+						copyTitleWithSeason && "复制带季度",
+						crossSeasonCount && "跨季计数",
+						autostart && "自启动",
+					]
+						.filter(Boolean)
+						.join(" · ") || "无启用项"
+				}
+			>
 				<SettingsList>
 					<SettingsRow label="复制条目名时带上季度">
 						<Toggle
@@ -511,9 +587,21 @@ export default function SettingsPage() {
 						/>
 					</SettingsRow>
 				</SettingsList>
-			</SettingsSection>
+			</CollapsibleSection>
 
-			<SettingsSection title="版本更新">
+			<CollapsibleSection
+				sectionKey="update"
+				title="版本更新"
+				summary={
+					updateStatus === "available"
+						? `发现新版本 ${latestVersion}`
+						: updateStatus === "downloading"
+							? `下载中 ${downloadProgress}%`
+							: updateStatus === "ready"
+								? "待重启安装"
+								: `当前 ${currentVersion || "—"}`
+				}
+			>
 				<SettingsList>
 					<SettingsRow label="自动检查更新">
 						<Toggle
@@ -601,7 +689,7 @@ export default function SettingsPage() {
 						</div>
 					)}
 				</div>
-			</SettingsSection>
+			</CollapsibleSection>
 
 			<SettingsSection title="关于">
 				<button

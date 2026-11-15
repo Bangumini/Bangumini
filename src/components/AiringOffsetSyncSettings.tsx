@@ -3,8 +3,10 @@ import { DEFAULT_OFFSET_SYNC_PREFIX, normalizeOffsetSyncConfig } from "@shared/o
 import type { OffsetSyncConfig } from "@shared/offset-sync-config";
 import { formatAiringOffsetDays } from "@shared/airing-offset";
 import { offsetSync } from "../api/airing-offset-sync";
-import type { AiringOffsetSyncManager } from "../api/airing-offset-sync-types";
+import type { AiringOffsetSyncManager, OffsetSyncStatus } from "../api/airing-offset-sync-types";
+import { readSectionExpanded, writeSectionExpanded } from "../api/settings-sections";
 import useAiringOffsetSync from "../hooks/useAiringOffsetSync";
+import { ChevronDownIcon } from "./icons";
 
 const buttonClass = "rounded-md border border-line bg-elevated px-3 py-1.5 text-[12px] text-fg-secondary hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-accent";
 const detailClass = "text-[12px] text-fg-tertiary";
@@ -215,8 +217,21 @@ function AccountSettings({ manager, account }: { manager: AiringOffsetSyncManage
 	</div>;
 }
 
+// 开关行的启用状态摘要；登录/恢复等中间态单独给出文案。
+function syncSummary(status: OffsetSyncStatus) {
+	if (!status.account) return "未登录";
+	if (!status.ready) return "正在恢复…";
+	if (!status.enabled) return "已停用";
+	const phase = status.phase === "syncing" ? "同步中 · " : "";
+	const conflicts = status.conflicts.length > 0 ? ` · 冲突 ${status.conflicts.length} 条` : "";
+	return `${phase}${status.configured ? "已启用" : "未配置"}${conflicts}`;
+}
+
+// 可折叠同步卡片：开关固定在头部，收起也能一键启停；
+// 表单、状态与冲突列表仅在展开后挂载，收起时不读取凭证配置。
 function SyncSection({ manager }: { manager: AiringOffsetSyncManager }) {
 	const status = useAiringOffsetSync(manager);
+	const [expanded, setExpanded] = useState(() => readSectionExpanded("sync", false));
 	const [changing, setChanging] = useState(false);
 	const [failure, setFailure] = useState(false);
 	const mounted = useRef(false);
@@ -244,15 +259,30 @@ function SyncSection({ manager }: { manager: AiringOffsetSyncManager }) {
 			if (mounted.current) setChanging(false);
 		}
 	}
-	return <>
-		<Toggle title label="同步" value={status.enabled} disabled={changing || !status.account || !status.ready}
-			onChange={enabled => { void toggle(enabled); }} />
-		{!status.account ? <p className={detailClass}>请登录后配置同步。</p>
-			: !status.ready ? <p role="status" className={detailClass}>正在恢复当前账号同步配置…</p>
-				: status.enabled ? <AccountSettings manager={manager} account={status.account} /> : null}
+	function toggleExpanded() {
+		const next = !expanded;
+		setExpanded(next);
+		writeSectionExpanded("sync", next);
+	}
+	const toggleDisabled = changing || !status.account || !status.ready;
+	return <div className="space-y-3">
+		<div className="flex items-center justify-between gap-3">
+			<button type="button" onClick={toggleExpanded} aria-expanded={expanded}
+				className="group flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left">
+				<span className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary transition-colors group-hover:text-fg-secondary">同步</span>
+				<span className="min-w-0 truncate text-[11px] text-fg-tertiary/80 transition-colors group-hover:text-fg-secondary">{syncSummary(status)}</span>
+				<ChevronDownIcon size={14}
+					className={`ml-auto shrink-0 text-fg-tertiary transition-transform duration-150 group-hover:text-fg-secondary ${expanded ? "rotate-180" : ""}`} />
+			</button>
+			<Toggle label="同步开关" value={status.enabled} disabled={toggleDisabled}
+				onChange={enabled => { void toggle(enabled); }} />
+		</div>
+		{!status.account ? expanded && <p className={detailClass}>请登录后配置同步。</p>
+			: !status.ready ? expanded && <p role="status" className={detailClass}>正在恢复当前账号同步配置…</p>
+				: status.enabled ? expanded && <AccountSettings manager={manager} account={status.account} /> : null}
 		{changing && <p role="status" className={detailClass}>正在保存同步开关…</p>}
 		{failure && <p role="alert" className="text-[12px] text-danger">同步开关保存失败，请重试。</p>}
-	</>;
+	</div>;
 }
 
 export default function AiringOffsetSyncSettings({ manager = offsetSync }: { manager?: AiringOffsetSyncManager }) {
