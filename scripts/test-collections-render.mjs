@@ -34,6 +34,7 @@ try {
 		let replacement;
 		if (specifier === "react") replacement = mocksUrl;
 		else if (specifier === "../api/query-map-cache") replacement = new URL("src/api/query-map-cache.ts", root).href;
+		else if (specifier === "../api/cross-season-count") replacement = new URL("src/api/cross-season-count.ts", root).href;
 		else if (specifier === "../hooks/useAiringOffsets") replacement = new URL("src/hooks/useAiringOffsets.ts", root).href;
 		else if (specifier.startsWith("@shared/") && !["@shared/api/client", "@shared/api/anilist", "@shared/storage/sqlite-cache"].includes(specifier)) {
 			replacement = new URL(specifier.replace("@shared/", "shared/") + ".ts", root).href;
@@ -191,6 +192,19 @@ ${[...mockExports].filter((name) => !implemented.has(name)).map((name) => `expor
 		setAiringOffsetDays(8, 0);
 		assert.deepEqual(renderGroups(), ["airing_not_caught"]);
 	} finally { Date.now = originalNow; }
+
+	// 跨季连续计数：第二季条目 sort 从系列编号继续，开启开关后“继续观看”用系列编号。
+	client.clear();
+	client.setQueryData(["calendar"], [{ weekday: { id: 5 }, items: [subject(8)] }]);
+	client.setQueryData(collectionsKey, page([{ ...collection(8), ep_status: 1 }]));
+	client.setQueryData(["anilist-airing-times-cache-v2", "8"], new Map([[8, { status: "no_schedule", fetchedAt: Date.now() }]]));
+	client.setQueryData(["episodes-schedule-v2", "8"], new Map([[8, [1, 2].map((ep) => ({ id: ep, ep, sort: ep + 12, type: 0, airdate: "2026-01-01" }))]]));
+	const renderHtml = () => renderToStaticMarkup(React.createElement(CollectionsPage));
+	preferences.set("bangumini_cross_season_count", "true");
+	assert.match(renderHtml(), /继续观看 14/, "跨季开启时下一集应显示系列编号 14");
+	preferences.set("bangumini_cross_season_count", "false");
+	assert.match(renderHtml(), /继续观看 2/, "跨季关闭时保持单季编号");
+	preferences.delete("bangumini_cross_season_count");
 
 	// 实际页面使用持久化偏置：无网络/无 AniList 精确时间时，缓存首帧也必须修正。
 	client.clear();

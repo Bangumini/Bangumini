@@ -69,6 +69,7 @@ import {
 } from "@shared/sort-collections";
 import type { SortedCollection } from "@shared/sort-collections";
 import { mergeCollectionPatchIntoList } from "@shared/collection-cache";
+import { buildCrossSeasonOffsets } from "@shared/cross-season";
 import { buildSubjectKeywords } from "@shared/pinyin-keywords";
 import {
 	readAllCachedCollections,
@@ -98,6 +99,7 @@ import {
 	subscribeCollectionsAutoRefresh,
 } from "../api/auto-refresh";
 import { readCachedQueryMap } from "../api/query-map-cache";
+import { isCrossSeasonCountEnabled } from "../api/cross-season-count";
 import { getCollectionsCacheKey } from "@shared/cache-keys";
 import { getSubjectTitleForCopy } from "../api/subject-title-copy";
 import {
@@ -548,6 +550,7 @@ function projectCollectionsDisplay(
 	nowMs: number,
 	offsets: AiringOffsets,
 	localCollections: ReadonlyMap<number, UserCollection | null>,
+	crossSeasonCount: boolean,
 ) {
 	const byId = new Map(inputs.collections.map((item) => [item.subject_id, item]));
 	for (const [id, local] of localCollections) {
@@ -564,12 +567,15 @@ function projectCollectionsDisplay(
 	const calendar = applyCalendarAiringOffsets(inputs.calendar, offsets);
 	const observations = toAiringObservationMap(inputs.airingRecords);
 	const derived = deriveAiringMaps(inputs.episodes, observations, buildAiringMap(inputs.calendar), nowMs, offsets);
+	const crossSeasonOffsets = crossSeasonCount
+		? buildCrossSeasonOffsets(inputs.episodes)
+		: undefined;
 	const sorted: SortedCollection[] = collectionType === "3"
 		? sortCollections(collections, calendar, today, derived.airedEpMap, observations, derived.nextAiringAtMap,
 			deriveManualAiringStates(raw, inputs.episodes, derived.airedEpMap, offsets))
 		: collections.map((collection) => ({ collection, group: "completed", weekday: 0, airedEp: 0 }));
 	const displayLabelMap = new Map(sorted.map((item) => [item.collection.subject_id,
-		getDisplayLabel(item.collection, item, today, derived.nextAiringAtMap, nowMs)]));
+		getDisplayLabel(item.collection, item, today, derived.nextAiringAtMap, nowMs, crossSeasonOffsets)]));
 	return { sorted, displayLabelMap,
 		justUpdatedSubjectIds: getJustUpdatedSubjectIds(sorted, derived.latestAiringAtMap, nowMs) };
 }
@@ -626,6 +632,8 @@ export default function CollectionsPage() {
 	const location = useLocation();
 	const queryClient = useQueryClient();
 	const [searchParams] = useSearchParams();
+	// 每次渲染读取开关：设置页切换后返回本页立即可见，与详情页保持一致。
+	const crossSeasonCount = isCrossSeasonCountEnabled();
 	const airingOffsets = useAiringOffsets();
 	const airingOffsetsVersion = JSON.stringify(airingOffsets);
 
@@ -1382,6 +1390,10 @@ export default function CollectionsPage() {
 	});
 
 	const episodeListMap = episodeMap ?? EMPTY_EPISODE_LIST_MAP;
+	const crossSeasonOffsets = useMemo(
+		() => crossSeasonCount ? buildCrossSeasonOffsets(episodeListMap) : undefined,
+		[crossSeasonCount, episodeListMap],
+	);
 	const derivedAiringData = useMemo(
 		() =>
 			deriveAiringMaps(episodeListMap, airingObservationMap, airingMap, nowMs, airingOffsets),
@@ -1463,11 +1475,12 @@ export default function CollectionsPage() {
 					today,
 					nextAiringAtMap,
 					nowMs,
+					crossSeasonOffsets,
 				),
 			);
 		}
 		return map;
-	}, [sorted, today, nextAiringAtMap, nowMs]);
+	}, [sorted, today, nextAiringAtMap, nowMs, crossSeasonOffsets]);
 	const justUpdatedSubjectIds = useMemo(
 		() => getJustUpdatedSubjectIds(sorted, latestAiringAtMap, nowMs),
 		[sorted, latestAiringAtMap, nowMs],
@@ -1549,6 +1562,10 @@ export default function CollectionsPage() {
 			? cachedEpisodeSnapshot.value
 			: episodeMap) ??
 		EMPTY_EPISODE_LIST_MAP;
+	const cacheCrossSeasonOffsets = useMemo(
+		() => crossSeasonCount ? buildCrossSeasonOffsets(cacheEpisodeListMap) : undefined,
+		[crossSeasonCount, cacheEpisodeListMap],
+	);
 
 	const cacheDerivedAiringData = useMemo(
 		() =>
@@ -1605,11 +1622,12 @@ export default function CollectionsPage() {
 					today,
 					cacheNextAiringAtMap,
 					nowMs,
+					cacheCrossSeasonOffsets,
 				),
 			);
 		}
 		return map;
-	}, [cacheSorted, today, cacheNextAiringAtMap, nowMs]);
+	}, [cacheSorted, today, cacheNextAiringAtMap, nowMs, cacheCrossSeasonOffsets]);
 	const cacheJustUpdatedSubjectIds = useMemo(
 		() =>
 			getJustUpdatedSubjectIds(
@@ -1807,8 +1825,8 @@ export default function CollectionsPage() {
 	const projectedState = useMemo(() => {
 		if (!activeCommittedState?.inputs) return activeCommittedState;
 		return { ...activeCommittedState, ...projectCollectionsDisplay(activeCommittedState.inputs,
-			collectionType, today, nowMs, airingOffsets, localCollections) };
-	}, [activeCommittedState, collectionType, today, nowMs, airingOffsets, localCollections]);
+			collectionType, today, nowMs, airingOffsets, localCollections, crossSeasonCount) };
+	}, [activeCommittedState, collectionType, today, nowMs, airingOffsets, localCollections, crossSeasonCount]);
 	const visibleSorted = projectedState?.sorted ?? EMPTY_SORTED;
 	const visibleDisplayLabelMap = projectedState?.displayLabelMap ?? EMPTY_DISPLAY_LABEL_MAP;
 	const visibleJustUpdatedSubjectIds = projectedState?.justUpdatedSubjectIds ?? EMPTY_SUBJECT_ID_SET;

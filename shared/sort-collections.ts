@@ -270,6 +270,7 @@ export function getDisplayLabel(
 	today: number,
 	nextAiringAtMap: ReadonlyMap<number, number> | undefined,
 	nowMs: number,
+	episodeOffsets?: ReadonlyMap<number, number>,
 ): string | null {
 	const { group, weekday } = meta;
 
@@ -331,7 +332,9 @@ export function getDisplayLabel(
 	}
 
 	if (group === "airing_not_caught" || group === "finished_started") {
-		return `继续观看 ${c.ep_status + 1}`;
+		// 跨季连续计数开启时，第二集起的编号加上系列偏移，与详情页进度显示保持一致。
+		const episodeOffset = episodeOffsets?.get(c.subject_id) ?? 0;
+		return `继续观看 ${c.ep_status + 1 + episodeOffset}`;
 	}
 
 	if (group === "completed") {
