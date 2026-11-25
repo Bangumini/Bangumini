@@ -26,10 +26,12 @@ use tokio::sync::Mutex;
 #[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 #[cfg(windows)]
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+#[cfg(windows)]
+use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, SetWindowLongPtrW, SetWindowPos,
+    CallWindowProcW, GetForegroundWindow, GetWindowRect, SetWindowLongPtrW, SetWindowPos,
     GWLP_WNDPROC, HWND_TOPMOST, HWND_NOTOPMOST,
     SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
     WM_SYSCOMMAND, SC_KEYMENU,
@@ -77,6 +79,10 @@ struct ShortcutHolder {
 const TRAY_SHORTCUT_ITEM_ID: &str = "global-shortcut";
 /// 全局快捷键是否启用。仅在当次运行内有效（不落盘），重启后恢复启用。
 static SHORTCUT_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// 前台存在全屏窗口时自动忽略全局快捷键。默认开启，落盘在前端，
+/// 启动时由 main.tsx 恢复为用户上次选择的值。
+static FULLSCREEN_SUPPRESS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// 全局快捷键启用状态变化时发给前端的事件名。
 const SHORTCUT_ENABLED_EVENT: &str = "shortcut-enabled-changed";
@@ -326,6 +332,62 @@ fn wait_for_shortcut_modifiers_release(shortcut: &Shortcut) {
 #[cfg(not(windows))]
 fn wait_for_shortcut_modifiers_release(_shortcut: &Shortcut) {}
 
+/// 前台窗口是否是一个铺满显示器的全屏窗口。
+///
+/// 判定：前台窗口矩形与其所在显示器矩形宽高、位置完全重合（±1px 容差）。
+/// 普通最大化的窗口 `GetWindowRect` 会比显示器矩形大（每边多出不可见的
+/// 边框外扩，约 7-8px），因此不会被误判；浏览器/播放器/游戏的全屏窗口
+/// （无边框铺满）恰好与显示器矩形重合，会被命中。
+#[cfg(windows)]
+fn is_foreground_window_fullscreen() -> bool {
+    use windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST;
+
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.is_invalid() {
+            return false;
+        }
+
+        let mut window_rect = RECT::default();
+        if GetWindowRect(fg, &mut window_rect).is_err() {
+            return false;
+        }
+
+        let monitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_invalid() {
+            return false;
+        }
+        let mut monitor_info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut monitor_info).as_bool() {
+            return false;
+        }
+        let monitor_rect = monitor_info.rcMonitor;
+
+        // 容差 1px：避免 DPI 缩放或取整带来的轻微偏差，
+        // 同时远小于最大化窗口约 8px 的边框外扩。
+        const TOLERANCE: i32 = 1;
+        let width_matches =
+            (window_rect.right - window_rect.left - (monitor_rect.right - monitor_rect.left)).abs()
+                <= TOLERANCE;
+        let height_matches =
+            (window_rect.bottom - window_rect.top - (monitor_rect.bottom - monitor_rect.top)).abs()
+                <= TOLERANCE;
+        let position_matches =
+            (window_rect.left - monitor_rect.left).abs() <= TOLERANCE
+                && (window_rect.top - monitor_rect.top).abs() <= TOLERANCE;
+
+        width_matches && height_matches && position_matches
+    }
+}
+
+#[cfg(not(windows))]
+fn is_foreground_window_fullscreen() -> bool {
+    false
+}
+
 fn install_shortcut(app: &tauri::AppHandle, accelerator: &str) -> Result<(), String> {
     let new_shortcut = Shortcut::from_str(accelerator)
         .map_err(|e| format!("无效的快捷键: {}", e))?;
@@ -353,6 +415,14 @@ fn install_shortcut(app: &tauri::AppHandle, accelerator: &str) -> Result<(), Str
     app.global_shortcut()
         .on_shortcut(new_shortcut.clone(), move |_app, shortcut, event| {
             if event.state() != GsShortcutState::Released {
+                return;
+            }
+
+            // 全屏抑制：前台是铺满显示器的全屏窗口（游戏/观影）时静默忽略，
+            // 避免误触快捷键把窗口弹到全屏画面上。
+            if FULLSCREEN_SUPPRESS_ENABLED.load(Ordering::SeqCst)
+                && is_foreground_window_fullscreen()
+            {
                 return;
             }
 
@@ -739,6 +809,8 @@ pub fn run() {
             wait_oauth_callback,
             get_shortcut,
             get_shortcut_enabled,
+            get_fullscreen_suppress_enabled,
+            set_fullscreen_suppress_enabled,
             register_shortcut,
             set_autostart,
             get_autostart,
@@ -987,6 +1059,18 @@ fn register_shortcut(app: tauri::AppHandle, accelerator: String) -> Result<(), S
 #[tauri::command]
 fn get_shortcut_enabled() -> bool {
     SHORTCUT_ENABLED.load(Ordering::SeqCst)
+}
+
+/// 当前“全屏时自动禁用”开关状态（值落盘在前端，启动时由前端恢复）。
+#[tauri::command]
+fn get_fullscreen_suppress_enabled() -> bool {
+    FULLSCREEN_SUPPRESS_ENABLED.load(Ordering::SeqCst)
+}
+
+/// 设置“全屏时自动禁用”开关，立即生效；持久化由前端 localStorage 负责。
+#[tauri::command]
+fn set_fullscreen_suppress_enabled(enabled: bool) {
+    FULLSCREEN_SUPPRESS_ENABLED.store(enabled, Ordering::SeqCst);
 }
 
 #[tauri::command]

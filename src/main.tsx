@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { tauriFetch, isTauri } from "./api/tauri-fetch";
+import { getFullscreenSuppressEnabled } from "./api/shortcut";
 import { setFetchFunction as setBangumiFetchFunction } from "@shared/api/client";
 import { setFetchFunction as setAniListFetchFunction } from "@shared/api/anilist";
 import { notifyNativeWindowVisibility } from "./api/auto-refresh";
@@ -35,6 +36,11 @@ if (isTauri()) {
       }).catch(() => { /* ignore */ });
     }
   } catch { /* ignore */ }
+
+  // 同步“全屏时自动禁用全局快捷键”开关（默认开启）
+  invoke("set_fullscreen_suppress_enabled", {
+    enabled: getFullscreenSuppressEnabled(),
+  }).catch(() => { /* ignore */ });
 }
 
 // Disable right-click context menu

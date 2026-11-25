@@ -7,6 +7,11 @@ import { isTauri } from "./tauri-fetch";
 const SHORTCUT_KEY = "bangumini_shortcut";
 export const DEFAULT_SHORTCUT = "CmdOrCtrl+Shift+B";
 
+// 全屏抑制开关的持久化键；值存 localStorage，Rust 端进程内态由前端在
+// 启动和变更时同步。
+export const FULLSCREEN_SUPPRESS_KEY = "bangumini_fullscreen_suppress";
+export const FULLSCREEN_SUPPRESS_DEFAULT = true;
+
 const isMac =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -29,6 +34,23 @@ export function loadStoredShortcut(): string {
 
 export function saveStoredShortcut(accelerator: string) {
   localStorage.setItem(SHORTCUT_KEY, accelerator);
+}
+
+/** 读取全屏抑制开关（默认开启）；localStorage 值非法时回退默认。 */
+export function getFullscreenSuppressEnabled(): boolean {
+  const raw = localStorage.getItem(FULLSCREEN_SUPPRESS_KEY);
+  if (raw === null) return FULLSCREEN_SUPPRESS_DEFAULT;
+  return raw === "1";
+}
+
+/** 写入全屏抑制开关，并同步到 Rust 端立即生效；非 Tauri 环境只存盘。 */
+export function setFullscreenSuppressEnabled(enabled: boolean) {
+  localStorage.setItem(FULLSCREEN_SUPPRESS_KEY, enabled ? "1" : "0");
+  if (isTauri()) {
+    void invoke("set_fullscreen_suppress_enabled", { enabled }).catch(
+      () => {},
+    );
+  }
 }
 
 // Convert a KeyboardEvent into a Tauri accelerator string.

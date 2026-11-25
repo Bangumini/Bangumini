@@ -26,6 +26,10 @@ import {
 	setSkippedUpdateVersion,
 } from "../hooks/useAutoUpdateCheck";
 import ShortcutRecorder from "../components/ShortcutRecorder";
+import {
+	getFullscreenSuppressEnabled,
+	setFullscreenSuppressEnabled,
+} from "../api/shortcut";
 import AiringOffsetSyncSettings from "../components/AiringOffsetSyncSettings";
 import { GithubIcon, ExternalIcon, ChevronDownIcon } from "../components/icons";
 
@@ -265,6 +269,10 @@ export default function SettingsPage() {
 	const [crossSeasonCount, setCrossSeasonCount] = useState(
 		isCrossSeasonCountEnabled,
 	);
+	// 全屏时自动禁用全局快捷键（默认开启）
+	const [fullscreenSuppress, setFullscreenSuppress] = useState(
+		getFullscreenSuppressEnabled,
+	);
 	// 自动检查更新开关（默认开启）
 	const [autoCheckUpdate, setAutoCheckUpdate] = useState(
 		isAutoCheckUpdateEnabled,
@@ -401,6 +409,12 @@ export default function SettingsPage() {
 		setCrossSeasonCountEnabled(next);
 	};
 
+	const handleToggleFullscreenSuppress = () => {
+		const next = !fullscreenSuppress;
+		setFullscreenSuppress(next);
+		setFullscreenSuppressEnabled(next);
+	};
+
 	const toggleAutoCheckUpdate = () => {
 		const next = !autoCheckUpdate;
 		setAutoCheckUpdate(next);
@@ -467,7 +481,19 @@ export default function SettingsPage() {
 			</SettingsSection>
 
 			<CollapsibleSection sectionKey="shortcut" title="全局快捷键">
-				<ShortcutRecorder />
+				<SettingsList>
+					<SettingsRow
+						label="全屏时自动禁用"
+						description="前台存在铺满显示器的全屏窗口（游戏、观影）时，忽略呼出快捷键，避免误触弹出"
+					>
+						<Toggle
+							label="全屏时自动禁用"
+							checked={fullscreenSuppress}
+							onChange={handleToggleFullscreenSuppress}
+						/>
+					</SettingsRow>
+				</SettingsList>
+				<ShortcutRecorder className="mt-3" />
 			</CollapsibleSection>
 
 			<CollapsibleSection sectionKey="proxy" title="代理" summary={proxy.enabled ? "已启用" : "未启用"}>
