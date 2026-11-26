@@ -618,6 +618,16 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<AuthUrlResult, String> {
     let state: String = format!("{:x}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
 
+    // 释放上一次会话遗留的监听器（用户中途关掉浏览器、wait_oauth_callback
+    // 从未被调用等场景），否则 19840 端口被占到应用退出，重试登录会一直 bind 失败。
+    let oauth_state = app.state::<Arc<Mutex<OAuthState>>>();
+    {
+        let mut state_guard = oauth_state.lock().await;
+        if state_guard.listeners.take().is_some() {
+            record_auth_event(&app, "callback.stale_session_dropped", serde_json::json!({}));
+        }
+    }
+
     // 先启动回调服务，避免浏览器重定向时发生竞态。localhost 可能解析到 IPv4 或 IPv6，
     // 因此两个回环地址都要监听；服务只绑定回环地址，不暴露到局域网。
     let ipv4 = TcpListener::bind("127.0.0.1:19840").await.map_err(|e| {
@@ -631,7 +641,6 @@ async fn start_oauth(app: tauri::AppHandle) -> Result<AuthUrlResult, String> {
     record_auth_event(&app, "callback.listener_ready", serde_json::json!({}));
 
     // 保存双栈监听器供回调命令接管。
-    let oauth_state = app.state::<Arc<Mutex<OAuthState>>>();
     oauth_state.lock().await.listeners = Some(OAuthListeners { ipv4, ipv6 });
 
     let auth_url = format!(
@@ -660,53 +669,76 @@ async fn wait_oauth_callback(app: tauri::AppHandle, expected_state: String) -> R
             "No OAuth session started".to_string()
         })?;
 
-    // Firefox/系统可能选择 IPv4 或 IPv6，哪个 listener 先收到回调就使用哪个。
-    let (stream, _) = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        async {
-            tokio::select! {
-                result = listeners.ipv4.accept() => result,
-                result = listeners.ipv6.accept() => result,
-            }
-        },
-    )
-    .await
-    .map_err(|_| {
-        record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "timeout" }));
-        "Timeout waiting for authorization".to_string()
-    })?
-    .map_err(|e| {
-        record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "accept" }));
-        e.to_string()
-    })?;
+    // 浏览器可能并发请求 /favicon.ico 或多余连接；循环 accept 直到
+    // 拿到含 code 的合法回调，无关请求以 404 应答后关闭继续等待。
+    // 整体限时 120s，任一 listener accept 出错即终止等待。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
 
-    let mut reader = BufReader::new(stream);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line).await.map_err(|e| {
-        record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "read" }));
-        e.to_string()
-    })?;
+    let (code, returned_state, mut stream) = loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "timeout" }));
+            return Err("Timeout waiting for authorization".to_string());
+        }
 
-    // 只解析回调参数，绝不记录请求行或查询串。
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-    let path = parts.get(1).copied().unwrap_or_default();
+        // Firefox/系统可能选择 IPv4 或 IPv6，哪个 listener 先收到回调就使用哪个。
+        let (stream, _) = tokio::time::timeout(
+            remaining,
+            async {
+                tokio::select! {
+                    result = listeners.ipv4.accept() => result,
+                    result = listeners.ipv6.accept() => result,
+                }
+            },
+        )
+        .await
+        .map_err(|_| {
+            record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "timeout" }));
+            "Timeout waiting for authorization".to_string()
+        })?
+        .map_err(|e| {
+            record_auth_event(&app, "callback.failed", serde_json::json!({ "reason": "accept" }));
+            e.to_string()
+        })?;
 
-    let mut code = String::new();
-    let mut returned_state = String::new();
-    if let Some(query) = path.split('?').nth(1) {
-        for param in query.split('&') {
-            let kv: Vec<&str> = param.splitn(2, '=').collect();
-            if kv.len() == 2 {
-                match kv[0] {
-                    "code" => code = urlencoding::decode(kv[1]).unwrap_or_default().into_owned(),
-                    "state" => returned_state = urlencoding::decode(kv[1]).unwrap_or_default().into_owned(),
+        let mut line_reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        if line_reader.read_line(&mut request_line).await.is_err() {
+            // 读失败视为无关连接，关闭后继续等待下一个。
+            continue;
+        }
+
+        // 只解析回调参数，绝不记录请求行或查询串。
+        let parts: Vec<&str> = request_line.split_whitespace().collect();
+        let path = parts.get(1).copied().unwrap_or_default();
+
+        let mut req_code = String::new();
+        let mut req_state = String::new();
+        if let Some(query) = path.split('?').nth(1) {
+            for param in query.split('&') {
+                let kv: Vec<&str> = param.splitn(2, '=').collect();
+                if kv.len() == 2 {
+                    match kv[0] {
+                        "code" => req_code = urlencoding::decode(kv[1]).unwrap_or_default().into_owned(),
+                        "state" => req_state = urlencoding::decode(kv[1]).unwrap_or_default().into_owned(),
                     _ => {}
+                    }
                 }
             }
         }
-    }
 
-    let mut stream = reader.into_inner();
+        if req_code.is_empty() {
+            // 无关请求（favicon、预检等）：404 后关闭，继续等待真正的回调。
+            let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let mut sock = line_reader.into_inner();
+            let _ = sock.write_all(response.as_bytes()).await;
+            let _ = sock.shutdown().await;
+            record_auth_event(&app, "callback.skipped_connection", serde_json::json!({}));
+            continue;
+        }
+
+        break (req_code, req_state, line_reader.into_inner());
+    };
     let callback_valid = !code.is_empty() && returned_state == expected_state;
     let response_status = if callback_valid { "200 OK" } else { "400 Bad Request" };
     let response_body = if callback_valid {

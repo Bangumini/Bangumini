@@ -537,12 +537,26 @@ export default function NextSeasonPage() {
 	}, [location.state]);
 
 	// Default to day of earliest entry
+	// 仅在首次加载（空 → 非空）时应用“最早条目所在日”；此后窗口聚焦等
+	// 后台刷新返回新数组也不再重置用户正在看的日期。从详情页返回时初始
+	// 日来自路由恢复，同样视为已应用。
+	const hasAppliedDefaultDayRef = useRef(initialState.isReturningFromDetail);
 	useEffect(() => {
 		if (entries.length === 0) return;
 		if (isReturningFromDetail.current) return;
 
-		setCurrentDay(earliestEntryDay(entries));
-	}, [entries]);
+		if (!hasAppliedDefaultDayRef.current) {
+			hasAppliedDefaultDayRef.current = true;
+			setCurrentDay(earliestEntryDay(entries));
+			return;
+		}
+
+		// 刷新可能移除当前日所在的分组（新番全部开播移出预告列表）；
+		// 仅当所选页消失时才回落到默认日，避免停在空页。
+		setCurrentDay((d) =>
+			availablePages.includes(d) ? d : earliestEntryDay(entries),
+		);
+	}, [entries, availablePages]);
 
 	// Filtered items (grouped by weekday, TBA last)
 	const filteredGroups = useMemo(() => {

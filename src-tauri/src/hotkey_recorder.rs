@@ -6,8 +6,9 @@
 //!
 //! Borrowed from Wox's `util/keyboard/listener_windows.c` approach.
 
+use std::sync::mpsc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use tauri::{AppHandle, Emitter};
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
@@ -15,9 +16,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, PostQuitMessage, PostThreadMessageW,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, MSG,
-    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostQuitMessage,
+    PostThreadMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION,
+    KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT,
+    WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 const VK_SHIFT: u32 = 0x10;
@@ -34,6 +36,10 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CAPTURED: AtomicBool = AtomicBool::new(false);
+/// 录制会话世代号。每次 start() 递增；线程退出清理时只允许
+/// 「当前世代」复位 ACTIVE / HOOK_THREAD_ID，防止 stop 后立刻 start
+/// 的场景里旧线程的清理覆盖新会话。
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub fn start(app: &AppHandle) -> Result<(), String> {
     let _ = APP.set(app.clone());
@@ -43,8 +49,19 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     CAPTURED.store(false, Ordering::SeqCst);
+    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
-    std::thread::spawn(|| unsafe {
+    // 钩子线程安装完成（或失败）后通过 channel 回报，start() 等待确认再返回。
+    // 否则紧随其后的 stop() 可能在 HOOK_THREAD_ID 写入前执行，读到 tid == 0
+    // 而提前返回，随后钩子照常安装并吞掉全部按键。
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+
+    std::thread::spawn(move || unsafe {
+        // 仅当本线程仍是当前世代时才发布 tid；被换代说明已有新会话，
+        // 本线程应尽快退出且不得触碰全局状态。
+        if GENERATION.load(Ordering::SeqCst) != generation {
+            return;
+        }
         HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
 
         let hmod = GetModuleHandleW(None).unwrap_or_default();
@@ -54,13 +71,32 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
             HINSTANCE(hmod.0),
             0,
         ) {
-            Ok(h) => h,
-            Err(_) => {
+            Ok(h) => {
+                // 强制创建线程消息队列（PeekMessageW 的副作用），保证随后
+                // stop() 发出的 WM_QUIT 一定能投递本线程，而不是被丢弃。
+                let mut msg = MSG::default();
+                let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+                let _ = ready_tx.send(Ok(()));
+                h
+            }
+            Err(e) => {
                 ACTIVE.store(false, Ordering::SeqCst);
                 HOOK_THREAD_ID.store(0, Ordering::SeqCst);
+                let _ = ready_tx.send(Err(e.to_string()));
                 return;
             }
         };
+
+        // ready 信号发出后、进入消息循环前，stop() 可能已经执行；
+        // 此处重查 ACTIVE，把该残窗也堵上。
+        if !ACTIVE.load(Ordering::SeqCst) {
+            let _ = UnhookWindowsHookEx(hook);
+            if GENERATION.load(Ordering::SeqCst) == generation {
+                ACTIVE.store(false, Ordering::SeqCst);
+                HOOK_THREAD_ID.store(0, Ordering::SeqCst);
+            }
+            return;
+        }
 
         // WH_KEYBOARD_LL requires a message loop on the installing thread.
         let mut msg = MSG::default();
@@ -70,17 +106,28 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         }
 
         let _ = UnhookWindowsHookEx(hook);
-        ACTIVE.store(false, Ordering::SeqCst);
-        HOOK_THREAD_ID.store(0, Ordering::SeqCst);
+        // 只允许当前世代退出时复位全局状态；旧世代（stop 后被新 start 换代）
+        // 不得覆盖新会话的 ACTIVE / HOOK_THREAD_ID。
+        if GENERATION.load(Ordering::SeqCst) == generation {
+            ACTIVE.store(false, Ordering::SeqCst);
+            HOOK_THREAD_ID.store(0, Ordering::SeqCst);
+        }
     });
 
-    Ok(())
+    match ready_rx.recv() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("SetWindowsHookExW failed: {e}")),
+        // 发送端（钩子线程）在发送前 panic 时 recv 失败；此时 ACTIVE 已被线程复位。
+        Err(_) => Err("hook thread terminated before install".to_string()),
+    }
 }
 
+/// 停止录制。先置起 ACTIVE 关门（hook proc 入口检查此后不再吞键），
+/// 再尽力通知消息循环立即退出。即使 tid 尚未就绪或消息丢失，钩子最多
+/// 保持为“旁路”状态：下一次按键事件会触发 hook proc 的入口检查，
+/// 由它自行 PostQuitMessage 退出循环并卸载钩子。
 pub fn stop() {
-    if !ACTIVE.load(Ordering::SeqCst) {
-        return;
-    }
+    ACTIVE.store(false, Ordering::SeqCst);
     let tid = HOOK_THREAD_ID.load(Ordering::SeqCst);
     if tid != 0 {
         unsafe {
@@ -95,6 +142,14 @@ unsafe extern "system" fn low_level_keyboard_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if code == HC_ACTION as i32 {
+        // 入口先检查 ACTIVE：stop() 之后、钩子卸载之前的窗口期内，
+        // 不再吞键，并主动退出消息循环，避免“stop 过早执行导致
+        // 钩子残留并吞掉全系统按键”的竞态。
+        if !ACTIVE.load(Ordering::SeqCst) {
+            PostQuitMessage(0);
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
+
         let msg = wparam.0 as u32;
         let kbd = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         let vk = kbd.vkCode;
